@@ -1,0 +1,26 @@
+[package]
+name = "chronik-indexer"
+version = "0.1.0"
+authors = ["Tobias Ruck <ruck.tobias@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+chronik-rocksdb = { path = "../chronik-rocksdb" }
+
+bitcoinsuite-core = { path = "../../bitcoinsuite/bitcoinsuite-core" }
+bitcoinsuite-slp = { path = "../../bitcoinsuite/bitcoinsuite-slp" }
+bitcoinsuite-bitcoind-nng = { path="../../bitcoinsuite/bitcoinsuite-bitcoind-nng" }
+bitcoinsuite-bitcoind = { path="../../bitcoinsuite/bitcoinsuite-bitcoind" }
+bitcoinsuite-test-utils = { path = "../../bitcoinsuite/bitcoinsuite-test-utils" }
+
+hex = "0.4"
+
+# Error handling
+thiserror = "1.0"
+bitcoinsuite-error = { path = "../../bitcoinsuite/bitcoinsuite-error" }
+
+[dev-dependencies]
+pretty_assertions = "0.7"
+
+# For ipc named pipes
+tempdir = "0.3"
