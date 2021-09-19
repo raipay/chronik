@@ -1,9 +1,9 @@
 use std::borrow::Cow;
 
 use bitcoinsuite_core::{Hashed, Sha256d};
-use byteorder::{BE, LE};
 use bitcoinsuite_error::{ErrorMeta, Result};
-use rocksdb::{ColumnFamilyDescriptor, Options, WriteBatch};
+use byteorder::{BE, LE};
+use rocksdb::{ColumnFamilyDescriptor, IteratorMode, Options, WriteBatch};
 use thiserror::Error;
 use zerocopy::{AsBytes, FromBytes, Unaligned, I32, I64, U32};
 
@@ -78,7 +78,7 @@ impl<'a> BlockWriter<'a> {
         Ok(BlockWriter { db, cf, index })
     }
 
-    pub fn insert(&mut self, batch: &mut WriteBatch, block: &Block) -> Result<()> {
+    pub fn insert(&self, batch: &mut WriteBatch, block: &Block) -> Result<()> {
         let block_data = BlockData {
             hash: block.hash.byte_array().array(),
             n_bits: U32::new(block.n_bits),
@@ -92,7 +92,7 @@ impl<'a> BlockWriter<'a> {
         Ok(())
     }
 
-    pub fn delete_by_height(&mut self, batch: &mut WriteBatch, height: i32) -> Result<()> {
+    pub fn delete_by_height(&self, batch: &mut WriteBatch, height: i32) -> Result<()> {
         let height = BlockHeight(BlockHeightNum::new(height));
         let block_data = self.db.get(self.cf, height.as_bytes())?;
         let block_data = match &block_data {
@@ -103,7 +103,7 @@ impl<'a> BlockWriter<'a> {
         Ok(())
     }
 
-    pub fn delete_by_hash(&mut self, batch: &mut WriteBatch, block_hash: &Sha256d) -> Result<()> {
+    pub fn delete_by_hash(&self, batch: &mut WriteBatch, block_hash: &Sha256d) -> Result<()> {
         let block_data = self
             .index
             .get(self.db, block_hash.byte_array().as_array())?;
@@ -116,7 +116,7 @@ impl<'a> BlockWriter<'a> {
     }
 
     pub fn delete_by_height_and_hash(
-        &mut self,
+        &self,
         batch: &mut WriteBatch,
         height: i32,
         block_hash: &Sha256d,
@@ -134,6 +134,35 @@ impl<'a> BlockReader<'a> {
         let cf = db.cf(CF_BLOCKS)?;
         let index = block_index();
         Ok(BlockReader { db, cf, index })
+    }
+
+    /// The height of the most-work fully-validated chain. The genesis block has height 0
+    pub fn height(&self) -> Result<i32> {
+        let mut iter = self.db.rocks().iterator_cf(self.cf, IteratorMode::End);
+        match iter.next() {
+            Some((height_bytes, _)) => Ok(interpret::<BlockHeightNum>(&height_bytes)?.get()),
+            None => Ok(-1),
+        }
+    }
+
+    pub fn tip(&self) -> Result<Option<Block>> {
+        let mut iter = self.db.rocks().iterator_cf(self.cf, IteratorMode::End);
+        match iter.next() {
+            Some((height_bytes, block_data)) => {
+                let height = interpret::<BlockHeightNum>(&height_bytes)?.get();
+                let block_data = interpret::<BlockData>(&block_data)?;
+                let prev_block_hash = self.get_prev_hash(height)?;
+                Ok(Some(Block {
+                    hash: Sha256d::new(block_data.hash),
+                    prev_hash: Sha256d::new(prev_block_hash),
+                    height,
+                    n_bits: block_data.n_bits.get(),
+                    timestamp: block_data.timestamp.get(),
+                    file_num: block_data.file_num.get(),
+                }))
+            }
+            None => Ok(None),
+        }
     }
 
     pub fn by_height(&self, height: i32) -> Result<Option<Block>> {
@@ -223,15 +252,15 @@ impl PartialOrd for BlockHeight {
 mod test {
     use crate::{Block, BlockReader, BlockWriter, Db};
     use bitcoinsuite_core::Sha256d;
-    use pretty_assertions::assert_eq;
     use bitcoinsuite_error::Result;
+    use pretty_assertions::assert_eq;
     use rocksdb::WriteBatch;
 
     #[test]
     fn test_blocks() -> Result<()> {
         let tempdir = tempdir::TempDir::new("slp-indexer-rocks--blocks")?;
         let db = Db::open(tempdir.path())?;
-        let mut writer = BlockWriter::new(&db)?;
+        let writer = BlockWriter::new(&db)?;
         let reader = BlockReader::new(&db)?;
         let block0 = Block {
             hash: Sha256d::new([44; 32]),
@@ -250,10 +279,14 @@ mod test {
             file_num: 7,
         };
         assert_eq!(reader.by_height(0)?, None);
+        assert_eq!(reader.height()?, -1);
+        assert_eq!(reader.tip()?, None);
         {
             let mut batch = WriteBatch::default();
             writer.insert(&mut batch, &block0)?;
             db.write_batch(batch)?;
+            assert_eq!(reader.height()?, 0);
+            assert_eq!(reader.tip()?.as_ref(), Some(&block0));
             assert_eq!(reader.by_height(-1)?, None);
             assert_eq!(reader.by_height(0)?.as_ref(), Some(&block0));
             assert_eq!(reader.by_height(1)?, None);
@@ -269,6 +302,8 @@ mod test {
             let mut batch = WriteBatch::default();
             writer.insert(&mut batch, &block1)?;
             db.write_batch(batch)?;
+            assert_eq!(reader.height()?, 1);
+            assert_eq!(reader.tip()?.as_ref(), Some(&block1));
             assert_eq!(reader.by_height(-1)?, None);
             assert_eq!(reader.by_height(0)?.as_ref(), Some(&block0));
             assert_eq!(reader.by_height(1)?.as_ref(), Some(&block1));
@@ -287,6 +322,8 @@ mod test {
             let mut batch = WriteBatch::default();
             writer.delete_by_height(&mut batch, 1)?;
             db.write_batch(batch)?;
+            assert_eq!(reader.height()?, 0);
+            assert_eq!(reader.tip()?.as_ref(), Some(&block0));
             assert_eq!(reader.by_height(-1)?, None);
             assert_eq!(reader.by_height(0)?.as_ref(), Some(&block0));
             assert_eq!(reader.by_height(1)?, None);
@@ -295,6 +332,8 @@ mod test {
             let mut batch = WriteBatch::default();
             writer.delete_by_hash(&mut batch, &Sha256d::new([44; 32]))?;
             db.write_batch(batch)?;
+            assert_eq!(reader.height()?, -1);
+            assert_eq!(reader.tip()?, None);
             assert_eq!(reader.by_height(-1)?, None);
             assert_eq!(reader.by_height(0)?, None);
             assert_eq!(reader.by_height(1)?, None);
