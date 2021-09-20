@@ -15,10 +15,9 @@ use crate::{
 
 pub const CF_BLOCKS: &str = "blocks";
 pub const CF_BLOCKS_INDEX_BY_HASH: &str = "blocks_index_by_hash";
-pub const SERIAL_NUM_BLOCKS: &[u8] = b"num_blocks";
 
 // big endian so blocks are sorted ascendingly
-type BlockHeightNum = I32<BE>;
+pub type BlockHeightInner = I32<BE>;
 
 pub struct BlockWriter<'a> {
     db: &'a Db,
@@ -34,7 +33,7 @@ pub struct BlockReader<'a> {
 
 #[derive(Debug, Copy, Clone, FromBytes, AsBytes, Unaligned, PartialEq, Eq)]
 #[repr(C)]
-pub struct BlockHeight(BlockHeightNum);
+pub struct BlockHeight(BlockHeightInner);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Block {
@@ -85,7 +84,7 @@ impl<'a> BlockWriter<'a> {
             timestamp: I64::new(block.timestamp),
             file_num: U32::new(block.file_num),
         };
-        let block_height = BlockHeight(BlockHeightNum::new(block.height));
+        let block_height = BlockHeight(BlockHeightInner::new(block.height));
         batch.put_cf(self.cf, block_height.as_bytes(), block_data.as_bytes());
         self.index
             .insert(self.db, batch, &block_height, &block_data)?;
@@ -93,7 +92,7 @@ impl<'a> BlockWriter<'a> {
     }
 
     pub fn delete_by_height(&self, batch: &mut WriteBatch, height: i32) -> Result<()> {
-        let height = BlockHeight(BlockHeightNum::new(height));
+        let height = BlockHeight(BlockHeightInner::new(height));
         let block_data = self.db.get(self.cf, height.as_bytes())?;
         let block_data = match &block_data {
             Some(block_data) => interpret::<BlockData>(block_data)?,
@@ -121,7 +120,7 @@ impl<'a> BlockWriter<'a> {
         height: i32,
         block_hash: &Sha256d,
     ) -> Result<()> {
-        let height = BlockHeight(BlockHeightNum::new(height));
+        let height = BlockHeight(BlockHeightInner::new(height));
         batch.delete_cf(self.cf, height.as_bytes());
         self.index
             .delete(self.db, batch, &height, block_hash.byte_array().as_array())?;
@@ -140,7 +139,7 @@ impl<'a> BlockReader<'a> {
     pub fn height(&self) -> Result<i32> {
         let mut iter = self.db.rocks().iterator_cf(self.cf, IteratorMode::End);
         match iter.next() {
-            Some((height_bytes, _)) => Ok(interpret::<BlockHeightNum>(&height_bytes)?.get()),
+            Some((height_bytes, _)) => Ok(interpret::<BlockHeightInner>(&height_bytes)?.get()),
             None => Ok(-1),
         }
     }
@@ -149,7 +148,7 @@ impl<'a> BlockReader<'a> {
         let mut iter = self.db.rocks().iterator_cf(self.cf, IteratorMode::End);
         match iter.next() {
             Some((height_bytes, block_data)) => {
-                let height = interpret::<BlockHeightNum>(&height_bytes)?.get();
+                let height = interpret::<BlockHeightInner>(&height_bytes)?.get();
                 let block_data = interpret::<BlockData>(&block_data)?;
                 let prev_block_hash = self.get_prev_hash(height)?;
                 Ok(Some(Block {
@@ -168,7 +167,7 @@ impl<'a> BlockReader<'a> {
     pub fn by_height(&self, height: i32) -> Result<Option<Block>> {
         let block_data = self
             .db
-            .get(self.cf, BlockHeightNum::new(height).as_bytes())?;
+            .get(self.cf, BlockHeightInner::new(height).as_bytes())?;
         let block_data = match &block_data {
             Some(block_data) => interpret::<BlockData>(block_data)?,
             None => return Ok(None),
@@ -210,7 +209,7 @@ impl<'a> BlockReader<'a> {
         }
         let prev_block_data = self
             .db
-            .get(self.cf, BlockHeightNum::new(height - 1).as_bytes())?
+            .get(self.cf, BlockHeightInner::new(height - 1).as_bytes())?
             .ok_or(OrphanBlock(height))?;
         let prev_block = interpret::<BlockData>(&prev_block_data)?;
         Ok(prev_block.hash)

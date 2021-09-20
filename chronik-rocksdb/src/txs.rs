@@ -1,0 +1,398 @@
+use std::borrow::Cow;
+
+use bitcoinsuite_core::{Hashed, Sha256d};
+use bitcoinsuite_error::{ErrorMeta, Result};
+use byteorder::{BE, LE};
+use rocksdb::{ColumnFamilyDescriptor, Direction, IteratorMode, Options, WriteBatch};
+use thiserror::Error;
+use zerocopy::{AsBytes, FromBytes, Unaligned, U32, U64};
+
+use crate::{
+    data::interpret,
+    index::{Index, Indexable},
+    BlockHeightInner, Db, CF,
+};
+
+pub const CF_TXS: &str = "txs";
+pub const CF_BLOCK_BY_FIRST_TX: &str = "block_by_first_tx";
+pub const CF_FIRST_TX_BY_BLOCK: &str = "first_tx_by_block";
+pub const CF_TX_INDEX_BY_TXID: &str = "tx_index_by_txid";
+
+// big endian so txs are sorted ascendingly
+pub type TxNumInner = U64<BE>;
+
+#[derive(Debug, Copy, Clone, FromBytes, AsBytes, Unaligned, PartialEq, Eq)]
+#[repr(C)]
+pub struct TxNum(TxNumInner);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TxEntry {
+    pub txid: Sha256d,
+    pub data_pos: u32,
+    pub tx_size: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockTx {
+    pub entry: TxEntry,
+    pub block_height: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockTxs {
+    pub txs: Vec<TxEntry>,
+    pub block_height: i32,
+}
+
+#[derive(Debug, Clone, FromBytes, AsBytes, Unaligned)]
+#[repr(C)]
+struct TxData {
+    pub txid: [u8; 32],
+    pub data_pos: U32<LE>,
+    pub tx_size: U32<LE>,
+}
+
+pub struct TxWriter<'a> {
+    db: &'a Db,
+    cf_txs: &'a CF,
+    cf_block_by_first_tx: &'a CF,
+    cf_first_tx_by_block: &'a CF,
+    txid_index: Index<TxIndexable>,
+}
+
+pub struct TxReader<'a> {
+    db: &'a Db,
+    cf_tx_block: &'a CF,
+    txid_index: Index<TxIndexable>,
+}
+
+#[derive(Debug, Error, ErrorMeta)]
+pub enum TxsError {
+    #[critical()]
+    #[error("Inconsistent tx index")]
+    InconsistentTxIndex,
+
+    #[critical()]
+    #[error("Txs for block not found")]
+    NoSuchBlock,
+}
+
+use self::TxsError::*;
+
+struct TxIndexable;
+
+impl<'a> TxWriter<'a> {
+    pub fn add_cfs(columns: &mut Vec<ColumnFamilyDescriptor>) {
+        columns.push(ColumnFamilyDescriptor::new(CF_TXS, Options::default()));
+        columns.push(ColumnFamilyDescriptor::new(
+            CF_BLOCK_BY_FIRST_TX,
+            Options::default(),
+        ));
+        columns.push(ColumnFamilyDescriptor::new(
+            CF_FIRST_TX_BY_BLOCK,
+            Options::default(),
+        ));
+        Index::<TxIndexable>::add_cfs(columns, CF_TX_INDEX_BY_TXID);
+    }
+
+    pub fn new(db: &'a Db) -> Result<Self> {
+        let cf_txs = db.cf(CF_TXS)?;
+        let cf_block_by_first_tx = db.cf(CF_BLOCK_BY_FIRST_TX)?;
+        let cf_first_tx_by_block = db.cf(CF_FIRST_TX_BY_BLOCK)?;
+        Ok(TxWriter {
+            db,
+            cf_txs,
+            cf_block_by_first_tx,
+            cf_first_tx_by_block,
+            txid_index: txid_index(),
+        })
+    }
+
+    pub fn insert_block_txs(&self, batch: &mut WriteBatch, block_txs: &BlockTxs) -> Result<()> {
+        let mut last_tx_num_iterator = self.db.rocks().iterator_cf(self.cf_txs, IteratorMode::End);
+        let mut next_tx_num = match last_tx_num_iterator.next() {
+            Some((tx_num, _)) => interpret::<TxNumInner>(&tx_num)?.get() + 1,
+            None => 0,
+        };
+        batch.put_cf(
+            self.cf_block_by_first_tx,
+            TxNumInner::new(next_tx_num).as_bytes(),
+            BlockHeightInner::new(block_txs.block_height).as_bytes(),
+        );
+        batch.put_cf(
+            self.cf_first_tx_by_block,
+            BlockHeightInner::new(block_txs.block_height).as_bytes(),
+            TxNumInner::new(next_tx_num).as_bytes(),
+        );
+        for tx in &block_txs.txs {
+            let tx_data = TxData {
+                txid: tx.txid.byte_array().array(),
+                data_pos: U32::new(tx.data_pos),
+                tx_size: U32::new(tx.tx_size),
+            };
+            let tx_num = TxNum(TxNumInner::new(next_tx_num));
+            batch.put_cf(self.cf_txs, tx_num.as_bytes(), tx_data.as_bytes());
+            self.txid_index.insert(self.db, batch, &tx_num, &tx_data)?;
+            next_tx_num += 1;
+        }
+        Ok(())
+    }
+
+    pub fn delete_block_txs(&self, batch: &mut WriteBatch, block_height: i32) -> Result<()> {
+        let block_height_inner = BlockHeightInner::new(block_height);
+        let first_tx_num = self
+            .db
+            .get(self.cf_first_tx_by_block, block_height_inner.as_bytes())?
+            .ok_or(NoSuchBlock)?;
+        let next_block_height_inner = BlockHeightInner::new(block_height + 1);
+        let end_tx_num = self
+            .db
+            .get(
+                self.cf_first_tx_by_block,
+                next_block_height_inner.as_bytes(),
+            )?
+            .map(|end_tx_num| -> Result<_> { Ok(interpret::<TxNumInner>(&end_tx_num)?.get()) })
+            .transpose()?;
+        let iterator = self.db.rocks().iterator_cf(
+            self.cf_txs,
+            IteratorMode::From(&first_tx_num, Direction::Forward),
+        );
+        for (tx_num, tx_data) in iterator {
+            let tx_num = interpret::<TxNum>(&tx_num)?;
+            let tx_data = interpret::<TxData>(&tx_data)?;
+            if let Some(end_tx_num) = end_tx_num {
+                if tx_num.0.get() >= end_tx_num {
+                    break;
+                }
+            }
+            batch.delete_cf(self.cf_txs, tx_num.as_bytes());
+            self.txid_index
+                .delete(self.db, batch, tx_num, &tx_data.txid)?;
+        }
+        batch.delete_cf(self.cf_block_by_first_tx, block_height_inner.as_bytes());
+        batch.delete_cf(self.cf_first_tx_by_block, &first_tx_num);
+        Ok(())
+    }
+}
+
+impl<'a> TxReader<'a> {
+    pub fn new(db: &'a Db) -> Result<Self> {
+        let cf_tx_block = db.cf(CF_BLOCK_BY_FIRST_TX)?;
+        Ok(TxReader {
+            db,
+            cf_tx_block,
+            txid_index: txid_index(),
+        })
+    }
+
+    pub fn by_txid(&self, txid: &Sha256d) -> Result<Option<BlockTx>> {
+        let (tx_num, tx_data) = match self.txid_index.get(self.db, txid.byte_array().as_array())? {
+            Some(tuple) => tuple,
+            None => return Ok(None),
+        };
+        let mut tx_block = self.db.rocks().iterator_cf(
+            self.cf_tx_block,
+            IteratorMode::From(tx_num.as_bytes(), Direction::Reverse),
+        );
+        let block_height = match tx_block.next() {
+            Some((_, block_height)) => interpret::<BlockHeightInner>(&block_height)?.get(),
+            None => return Err(InconsistentTxIndex.into()),
+        };
+        Ok(Some(BlockTx {
+            entry: TxEntry {
+                txid: Sha256d::new(tx_data.txid),
+                data_pos: tx_data.data_pos.get(),
+                tx_size: tx_data.tx_size.get(),
+            },
+            block_height,
+        }))
+    }
+
+    #[cfg(test)]
+    fn tx_num_by_txid(&self, txid: &Sha256d) -> Result<Option<u64>> {
+        match self.txid_index.get(self.db, txid.byte_array().as_array())? {
+            Some((tx_num, _)) => Ok(Some(interpret::<TxNumInner>(tx_num.as_bytes())?.get())),
+            None => Ok(None),
+        }
+    }
+}
+
+fn txid_index() -> Index<TxIndexable> {
+    Index::new(CF_TXS, CF_TX_INDEX_BY_TXID, TxIndexable)
+}
+
+impl Ord for TxNum {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.get().cmp(&other.0.get())
+    }
+}
+
+impl PartialOrd for TxNum {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Indexable for TxIndexable {
+    type Hash = U32<LE>;
+    type Serial = TxNum;
+    type Key = [u8; 32];
+    type Value = TxData;
+    fn hash(&self, key: &Self::Key) -> Self::Hash {
+        U32::new(seahash::hash(key) as u32)
+    }
+    fn get_value_key<'a>(&self, value: &'a Self::Value) -> Cow<'a, Self::Key> {
+        Cow::Borrowed(&value.txid)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::{BlockTx, BlockTxs, Db, TxEntry, TxReader, TxWriter};
+    use bitcoinsuite_core::Sha256d;
+    use bitcoinsuite_error::Result;
+    use pretty_assertions::assert_eq;
+    use rocksdb::WriteBatch;
+
+    #[test]
+    fn test_txs() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("slp-indexer-rocks--blocks")?;
+        let db = Db::open(tempdir.path())?;
+        let tx_writer = TxWriter::new(&db)?;
+        let tx_reader = TxReader::new(&db)?;
+        let tx1 = TxEntry {
+            txid: Sha256d::new([1; 32]),
+            data_pos: 100,
+            tx_size: 1000,
+        };
+        {
+            // insert genesis tx
+            let block_txs = BlockTxs {
+                block_height: 0,
+                txs: vec![tx1.clone()],
+            };
+            let mut batch = WriteBatch::default();
+            tx_writer.insert_block_txs(&mut batch, &block_txs)?;
+            db.write_batch(batch)?;
+            let tx_reader = TxReader::new(&db)?;
+            assert_eq!(tx_reader.by_txid(&Sha256d::new([0; 32]))?, None);
+            assert_eq!(tx_reader.tx_num_by_txid(&Sha256d::new([0; 32]))?, None);
+            assert_eq!(
+                tx_reader.by_txid(&Sha256d::new([1; 32]))?,
+                Some(BlockTx {
+                    entry: tx1.clone(),
+                    block_height: 0,
+                })
+            );
+            assert_eq!(tx_reader.tx_num_by_txid(&Sha256d::new([1; 32]))?, Some(0));
+        }
+        let tx2 = TxEntry {
+            txid: Sha256d::new([2; 32]),
+            data_pos: 200,
+            tx_size: 2000,
+        };
+        let tx3 = TxEntry {
+            txid: Sha256d::new([3; 32]),
+            data_pos: 300,
+            tx_size: 3000,
+        };
+        {
+            // insert 2 more txs
+            let block_txs = BlockTxs {
+                block_height: 1,
+                txs: vec![tx2.clone(), tx3.clone()],
+            };
+            let mut batch = WriteBatch::default();
+            tx_writer.insert_block_txs(&mut batch, &block_txs)?;
+            db.write_batch(batch)?;
+            assert_eq!(tx_reader.by_txid(&Sha256d::new([0; 32]))?, None);
+            assert_eq!(tx_reader.tx_num_by_txid(&Sha256d::new([0; 32]))?, None);
+            assert_eq!(
+                tx_reader.by_txid(&Sha256d::new([1; 32]))?,
+                Some(BlockTx {
+                    entry: tx1.clone(),
+                    block_height: 0,
+                })
+            );
+            assert_eq!(tx_reader.tx_num_by_txid(&Sha256d::new([1; 32]))?, Some(0));
+            assert_eq!(
+                tx_reader.by_txid(&Sha256d::new([2; 32]))?,
+                Some(BlockTx {
+                    entry: tx2,
+                    block_height: 1,
+                })
+            );
+            assert_eq!(tx_reader.tx_num_by_txid(&Sha256d::new([2; 32]))?, Some(1));
+            assert_eq!(
+                tx_reader.by_txid(&Sha256d::new([3; 32]))?,
+                Some(BlockTx {
+                    entry: tx3,
+                    block_height: 1,
+                })
+            );
+            assert_eq!(tx_reader.tx_num_by_txid(&Sha256d::new([3; 32]))?, Some(2));
+        }
+        {
+            // delete latest block
+            let mut batch = WriteBatch::default();
+            tx_writer.delete_block_txs(&mut batch, 1)?;
+            db.write_batch(batch)?;
+            assert_eq!(tx_reader.by_txid(&Sha256d::new([0; 32]))?, None);
+            assert_eq!(
+                tx_reader.by_txid(&Sha256d::new([1; 32]))?,
+                Some(BlockTx {
+                    entry: tx1,
+                    block_height: 0,
+                })
+            );
+            assert_eq!(tx_reader.by_txid(&Sha256d::new([2; 32]))?, None);
+            assert_eq!(tx_reader.by_txid(&Sha256d::new([3; 32]))?, None);
+        }
+        let tx2 = TxEntry {
+            txid: Sha256d::new([102; 32]),
+            data_pos: 200,
+            tx_size: 2000,
+        };
+        let tx3 = TxEntry {
+            txid: Sha256d::new([103; 32]),
+            data_pos: 300,
+            tx_size: 3000,
+        };
+        {
+            // Add new latest block and then delete genesis block
+            // This should never happen in practice, but we test for it so we have consistent
+            // behavior in this case.
+            let block_txs = BlockTxs {
+                block_height: 1,
+                txs: vec![tx2.clone(), tx3.clone()],
+            };
+            let mut batch = WriteBatch::default();
+            tx_writer.insert_block_txs(&mut batch, &block_txs)?;
+            db.write_batch(batch)?;
+
+            let mut batch = WriteBatch::default();
+            tx_writer.delete_block_txs(&mut batch, 0)?;
+            db.write_batch(batch)?;
+
+            assert_eq!(tx_reader.by_txid(&Sha256d::new([0; 32]))?, None);
+            assert_eq!(tx_reader.by_txid(&Sha256d::new([1; 32]))?, None);
+            assert_eq!(
+                tx_reader.by_txid(&Sha256d::new([102; 32]))?,
+                Some(BlockTx {
+                    entry: tx2,
+                    block_height: 1,
+                })
+            );
+            assert_eq!(tx_reader.tx_num_by_txid(&Sha256d::new([102; 32]))?, Some(1));
+            assert_eq!(
+                tx_reader.by_txid(&Sha256d::new([103; 32]))?,
+                Some(BlockTx {
+                    entry: tx3,
+                    block_height: 1,
+                })
+            );
+            assert_eq!(tx_reader.tx_num_by_txid(&Sha256d::new([103; 32]))?, Some(2));
+        }
+        Ok(())
+    }
+}
