@@ -6,7 +6,7 @@ use bitcoinsuite_core::{Hashed, Sha256d};
 use bitcoinsuite_error::{ErrorMeta, Result};
 use thiserror::Error;
 
-use chronik_rocksdb::{Block, BlockReader, IndexDb};
+use chronik_rocksdb::{Block, BlockReader, BlockTxs, IndexDb, TxEntry, TxReader};
 
 pub struct SlpIndexer {
     db: IndexDb,
@@ -137,7 +137,10 @@ impl SlpIndexer {
                 self._handle_block(tip, block_connected.block)?;
             }
             Message::BlockDisconnected(block_disconnected) => {
-                println!("Got BlockDisconnected {}", block_disconnected.block.header.hash);
+                println!(
+                    "Got BlockDisconnected {}",
+                    block_disconnected.block.header.hash
+                );
                 self._handle_block_disconnected(block_disconnected)?;
             }
             msg => return Err(SlpIndexerError::UnexpectedPluginMessage(msg).into()),
@@ -149,31 +152,50 @@ impl SlpIndexer {
         self.db.blocks()
     }
 
-    fn _handle_block(&self, tip: Option<Block>, block: bitcoinsuite_bitcoind_nng::Block) -> Result<()> {
+    pub fn txs(&self) -> Result<TxReader> {
+        self.db.txs()
+    }
+
+    fn _handle_block(
+        &self,
+        tip: Option<Block>,
+        block: bitcoinsuite_bitcoind_nng::Block,
+    ) -> Result<()> {
         let next_height = tip.as_ref().map(|tip| tip.height + 1).unwrap_or(0);
-        self.db.insert_block(&Block {
+        let db_block = Block {
             hash: block.header.hash.clone(),
             prev_hash: block.header.prev_hash,
             height: next_height,
             n_bits: block.header.n_bits,
             timestamp: block.header.timestamp.try_into().unwrap(),
             file_num: block.file_num,
-        })?;
+        };
+        let num_txs = block.txs.len();
+        let db_txs = block
+            .txs
+            .into_iter()
+            .map(|tx| TxEntry {
+                txid: tx.tx.txid,
+                data_pos: tx.data_pos,
+                tx_size: tx.tx.raw.len() as u32,
+            })
+            .collect::<Vec<_>>();
+        let db_block_txs = BlockTxs {
+            txs: db_txs,
+            block_height: next_height,
+        };
+        self.db.insert_block(&db_block, &db_block_txs)?;
         println!(
             "Added block {} with {} txs, height {}",
-            block.header.hash,
-            block.txs.len(),
-            next_height
+            block.header.hash, num_txs, next_height
         );
         Ok(())
     }
 
     fn _handle_block_disconnected(&self, block_disconnected: BlockDisconnected) -> Result<()> {
-        self.db.delete_block(&block_disconnected.block.header.hash)?;
-        println!(
-            "Removed block {}",
-            block_disconnected.block.header.hash
-        );
+        self.db
+            .delete_block(&block_disconnected.block.header.hash)?;
+        println!("Removed block {}", block_disconnected.block.header.hash);
         Ok(())
     }
 }

@@ -9,11 +9,11 @@ use bitcoinsuite_core::{
     build_lotus_block, build_lotus_coinbase, AddressType, BitcoinCode, Bytes, CashAddress, Hashed,
     Script, Sha256d, ShaRmd160, BCHREG,
 };
-use bitcoinsuite_test_utils::bin_folder;
-use pretty_assertions::assert_eq;
 use bitcoinsuite_error::Result;
+use bitcoinsuite_test_utils::bin_folder;
 use chronik_indexer::SlpIndexer;
-use chronik_rocksdb::{Db, IndexDb};
+use chronik_rocksdb::{BlockTx, Db, IndexDb, TxEntry};
+use pretty_assertions::assert_eq;
 use tempdir::TempDir;
 
 #[test]
@@ -48,6 +48,34 @@ fn test_non_slp() -> Result<()> {
     Ok(())
 }
 
+fn get_coinbase_txid(bitcoind: &BitcoinCli, block_hash: &Sha256d) -> Result<Sha256d> {
+    let node_block = bitcoind.cmd_json("getblock", &[&block_hash.to_hex_be()])?;
+    let txid = Sha256d::from_hex_be(node_block["tx"][0].as_str().unwrap())?;
+    Ok(txid)
+}
+
+fn check_tx_indexed(
+    slp_indexer: &SlpIndexer,
+    txid: &Sha256d,
+    block_height: i32,
+    data_pos: u32,
+    tx_size: u32,
+) -> Result<()> {
+    let db_txs = slp_indexer.txs()?;
+    assert_eq!(
+        db_txs.by_txid(txid)?,
+        Some(BlockTx {
+            block_height,
+            entry: TxEntry {
+                txid: txid.clone(),
+                data_pos,
+                tx_size,
+            }
+        })
+    );
+    Ok(())
+}
+
 fn test_index_genesis(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Result<()> {
     let info = bitcoind.cmd_json("getblockchaininfo", &[])?;
     assert!(info["initialblockdownload"].as_bool().unwrap());
@@ -58,10 +86,15 @@ fn test_index_genesis(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Result
     // index genesis block
     assert!(!slp_indexer.catchup_step()?);
     assert_eq!(db_blocks.height()?, 0);
-    assert_eq!(
-        db_blocks.tip()?.unwrap().hash.to_hex_be(),
-        info["bestblockhash"]
-    );
+    let tip = db_blocks.tip()?.unwrap();
+    assert_eq!(tip.hash.to_hex_be(), info["bestblockhash"]);
+    check_tx_indexed(
+        slp_indexer,
+        &get_coinbase_txid(bitcoind, &tip.hash)?,
+        0,
+        170,
+        217,
+    )?;
     Ok(())
 }
 
@@ -88,6 +121,13 @@ fn test_get_out_of_ibd(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Resul
     assert_eq!(tip.hash.to_hex_be(), cur_info["bestblockhash"]);
     assert_eq!(prev_info["initialblockdownload"], true);
     assert_eq!(cur_info["initialblockdownload"], false);
+    check_tx_indexed(
+        slp_indexer,
+        &get_coinbase_txid(bitcoind, &tip.hash)?,
+        1,
+        557,
+        111,
+    )?;
 
     // catchup finished
     assert!(slp_indexer.catchup_step()?);
@@ -100,7 +140,10 @@ fn test_reorg_empty(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Result<(
     let anyone_script = Script::new(Bytes::from_bytes(vec![0x51])).to_p2sh();
     // build two empty blocks that reorg the previous block
     let db_blocks = slp_indexer.blocks()?;
+    let db_txs = slp_indexer.txs()?;
     let tip = db_blocks.tip()?.unwrap();
+    let old_txid = get_coinbase_txid(bitcoind, &tip.hash)?;
+    check_tx_indexed(slp_indexer, &old_txid, 1, 557, 111)?;
     let block1 = build_lotus_block(
         tip.prev_hash.clone(),
         tip.timestamp,
@@ -129,6 +172,14 @@ fn test_reorg_empty(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Result<(
     // tip is moved back one block
     let new_tip = db_blocks.tip()?.unwrap();
     assert_eq!(new_tip.hash, tip.prev_hash);
+    assert_eq!(db_txs.by_txid(&old_txid)?, None);
+    check_tx_indexed(
+        slp_indexer,
+        &get_coinbase_txid(bitcoind, &new_tip.hash)?,
+        0,
+        170,
+        217,
+    )?;
 
     // next message is BlockConnected for block1
     slp_indexer.process_next_msg()?;
@@ -136,12 +187,27 @@ fn test_reorg_empty(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Result<(
     let block1_tip = db_blocks.tip()?.unwrap();
     assert_eq!(block1_tip.hash, block1.header.calc_hash());
     assert_eq!(block1_tip.prev_hash, new_tip.hash);
+    assert_eq!(db_txs.by_txid(&old_txid)?, None);
+    check_tx_indexed(
+        slp_indexer,
+        &get_coinbase_txid(bitcoind, &block1_tip.hash)?,
+        1,
+        838,
+        180,
+    )?;
 
     // next message is BlockConnected for block2
     slp_indexer.process_next_msg()?;
     let block2_tip = db_blocks.tip()?.unwrap();
     assert_eq!(block2_tip.hash, block2.header.calc_hash());
     assert_eq!(block2_tip.prev_hash, block1_tip.hash);
+    check_tx_indexed(
+        slp_indexer,
+        &get_coinbase_txid(bitcoind, &block2_tip.hash)?,
+        2,
+        1188,
+        180,
+    )?;
 
     Ok(())
 }
