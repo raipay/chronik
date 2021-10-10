@@ -20,7 +20,7 @@ thiserror = "1.0"
 bitcoinsuite-error = { path = "../../bitcoinsuite/bitcoinsuite-error" }
 
 [dev-dependencies]
-pretty_assertions = "0.7"
+pretty_assertions = "1.0"
 
 # For ipc named pipes
 tempdir = "0.3"

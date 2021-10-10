@@ -24,4 +24,4 @@ seahash = "4.1"
 
 [dev-dependencies]
 tempdir = "0.3"
-pretty_assertions = "0.7"
+pretty_assertions = "1.0"
