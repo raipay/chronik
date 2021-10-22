@@ -1,5 +1,3 @@
-use std::convert::TryInto;
-
 use bitcoinsuite_bitcoind::cli::BitcoinCli;
 use bitcoinsuite_bitcoind_nng::{BlockDisconnected, Message, PubInterface, RpcInterface};
 use bitcoinsuite_core::{Hashed, Sha256d};
