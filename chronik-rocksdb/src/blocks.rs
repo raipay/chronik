@@ -257,6 +257,7 @@ mod test {
 
     #[test]
     fn test_blocks() -> Result<()> {
+        bitcoinsuite_error::install()?;
         let tempdir = tempdir::TempDir::new("slp-indexer-rocks--blocks")?;
         let db = Db::open(tempdir.path())?;
         let writer = BlockWriter::new(&db)?;

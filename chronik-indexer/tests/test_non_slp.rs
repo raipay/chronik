@@ -18,6 +18,7 @@ use tempdir::TempDir;
 
 #[test]
 fn test_non_slp() -> Result<()> {
+    bitcoinsuite_error::install()?;
     let dir = TempDir::new("slp-indexer-test")?;
     let pub_url = format!("ipc://{}", dir.path().join("pub.pipe").to_string_lossy());
     let rpc_url = format!("ipc://{}", dir.path().join("rpc.pipe").to_string_lossy());

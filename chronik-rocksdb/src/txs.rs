@@ -256,6 +256,7 @@ mod test {
 
     #[test]
     fn test_txs() -> Result<()> {
+        bitcoinsuite_error::install()?;
         let tempdir = tempdir::TempDir::new("slp-indexer-rocks--blocks")?;
         let db = Db::open(tempdir.path())?;
         let tx_writer = TxWriter::new(&db)?;

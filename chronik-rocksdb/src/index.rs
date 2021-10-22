@@ -216,6 +216,7 @@ mod tests {
 
     #[test]
     fn test_index() -> Result<()> {
+        bitcoinsuite_error::install()?;
         let tempdir = tempdir::TempDir::new("slp-indexer-rocks--blocks")?;
         let mut cfs = vec![ColumnFamilyDescriptor::new(CF_TEST, Options::default())];
         Index::<ModIndexable>::add_cfs(&mut cfs, CF_TEST_INDEX);
