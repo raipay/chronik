@@ -12,7 +12,7 @@ use bitcoinsuite_core::{
 use bitcoinsuite_error::Result;
 use bitcoinsuite_test_utils::bin_folder;
 use chronik_indexer::SlpIndexer;
-use chronik_rocksdb::{BlockTx, Db, IndexDb, TxEntry};
+use chronik_rocksdb::{BlockTx, Db, IndexDb, OutputsReader, PayloadPrefix, ScriptEntry, TxEntry};
 use pretty_assertions::assert_eq;
 use tempdir::TempDir;
 
@@ -96,6 +96,12 @@ fn test_index_genesis(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Result
         170,
         217,
     )?;
+    let genesis_payload = hex::decode(
+        "04678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e5\
+         1ec112de5c384df7ba0b8d578a4c702b6bf11d5f"
+    )?;
+    let r = &slp_indexer.outputs()?;
+    check_pages(r, PayloadPrefix::P2PKLegacy, &genesis_payload, [&[(0, 1)]])?;
     Ok(())
 }
 
@@ -129,6 +135,8 @@ fn test_get_out_of_ibd(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Resul
         557,
         111,
     )?;
+    let r = &slp_indexer.outputs()?;
+    check_pages(r, PayloadPrefix::P2SH, &[0; 20], [&[(1, 1)]])?;
 
     // catchup finished
     assert!(slp_indexer.catchup_step()?);
@@ -138,13 +146,18 @@ fn test_get_out_of_ibd(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Resul
 }
 
 fn test_reorg_empty(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Result<()> {
-    let anyone_script = Script::new(Bytes::from_bytes(vec![0x51])).to_p2sh();
+    let anyone_payload = ShaRmd160::digest(Bytes::from_bytes(vec![0x51]));
+    let anyone_script = Script::p2sh(&anyone_payload);
+    let anyone_payload = anyone_payload.as_slice();
     // build two empty blocks that reorg the previous block
     let db_blocks = slp_indexer.blocks()?;
     let db_txs = slp_indexer.txs()?;
+    let db_outputs = slp_indexer.outputs()?;
+    let r = &db_outputs;
     let tip = db_blocks.tip()?.unwrap();
     let old_txid = get_coinbase_txid(bitcoind, &tip.hash)?;
     check_tx_indexed(slp_indexer, &old_txid, 1, 557, 111)?;
+    check_pages(r, PayloadPrefix::P2SH, &[0; 20], [&[(1, 1)]])?;
     let block1 = build_lotus_block(
         tip.prev_hash.clone(),
         tip.timestamp,
@@ -181,6 +194,8 @@ fn test_reorg_empty(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Result<(
         170,
         217,
     )?;
+    check_pages(r, PayloadPrefix::P2SH, &[0; 20], [])?;
+    check_pages(r, PayloadPrefix::P2SH, anyone_payload, [])?;
 
     // next message is BlockConnected for block1
     slp_indexer.process_next_msg()?;
@@ -196,6 +211,7 @@ fn test_reorg_empty(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Result<(
         838,
         180,
     )?;
+    check_pages(r, PayloadPrefix::P2SH, anyone_payload, [&[(1, 1)]])?;
 
     // next message is BlockConnected for block2
     slp_indexer.process_next_msg()?;
@@ -209,6 +225,29 @@ fn test_reorg_empty(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Result<(
         1188,
         180,
     )?;
+    check_pages(r, PayloadPrefix::P2SH, anyone_payload, [&[(1, 1), (2, 1)]])?;
 
+    Ok(())
+}
+
+fn check_pages<const N: usize>(
+    outputs_reader: &OutputsReader,
+    prefix: PayloadPrefix,
+    payload_body: &[u8],
+    expected_txs: [&[(u64, u32)]; N],
+) -> Result<()> {
+    assert_eq!(
+        outputs_reader.num_pages_by_payload(prefix, payload_body)?,
+        N,
+    );
+    for (page_num, txs) in expected_txs.into_iter().enumerate() {
+        assert_eq!(
+            outputs_reader.page_txs(page_num as u32, prefix, payload_body)?,
+            txs.iter()
+                .cloned()
+                .map(|(tx_num, out_idx)| ScriptEntry { tx_num, out_idx })
+                .collect::<Vec<_>>(),
+        );
+    }
     Ok(())
 }

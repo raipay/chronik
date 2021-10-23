@@ -1,10 +1,10 @@
 use bitcoinsuite_bitcoind::cli::BitcoinCli;
-use bitcoinsuite_bitcoind_nng::{BlockDisconnected, Message, PubInterface, RpcInterface};
-use bitcoinsuite_core::{Hashed, Sha256d};
+use bitcoinsuite_bitcoind_nng::{Message, PubInterface, RpcInterface};
+use bitcoinsuite_core::{BitcoinCode, Bytes, Hashed, Sha256d, UnhashedTx};
 use bitcoinsuite_error::{ErrorMeta, Result};
 use thiserror::Error;
 
-use chronik_rocksdb::{Block, BlockReader, BlockTxs, IndexDb, TxEntry, TxReader};
+use chronik_rocksdb::{Block, BlockReader, BlockTxs, IndexDb, OutputsReader, TxEntry, TxReader};
 
 pub struct SlpIndexer {
     db: IndexDb,
@@ -139,7 +139,8 @@ impl SlpIndexer {
                     "Got BlockDisconnected {}",
                     block_disconnected.block.header.hash
                 );
-                self._handle_block_disconnected(block_disconnected)?;
+                let tip = self.db.blocks()?.tip()?;
+                self._handle_block_disconnected(tip, block_disconnected.block)?;
             }
             msg => return Err(SlpIndexerError::UnexpectedPluginMessage(msg).into()),
         }
@@ -154,12 +155,24 @@ impl SlpIndexer {
         self.db.txs()
     }
 
-    fn _handle_block(
-        &self,
-        tip: Option<Block>,
-        block: bitcoinsuite_bitcoind_nng::Block,
-    ) -> Result<()> {
+    pub fn outputs(&self) -> Result<OutputsReader> {
+        self.db.outputs()
+    }
+
+    fn _block_txs(block: &bitcoinsuite_bitcoind_nng::Block) -> Result<Vec<UnhashedTx>> {
+        block
+            .txs
+            .iter()
+            .map(|tx| {
+                let mut raw_tx = Bytes::from_slice(&tx.tx.raw);
+                UnhashedTx::deser(&mut raw_tx).map_err(Into::into)
+            })
+            .collect()
+    }
+
+    fn _handle_block(&self, tip: Option<Block>, block: bitcoinsuite_bitcoind_nng::Block) -> Result<()> {
         let next_height = tip.as_ref().map(|tip| tip.height + 1).unwrap_or(0);
+        let txs = Self::_block_txs(&block)?;
         let db_block = Block {
             hash: block.header.hash.clone(),
             prev_hash: block.header.prev_hash,
@@ -182,7 +195,7 @@ impl SlpIndexer {
             txs: db_txs,
             block_height: next_height,
         };
-        self.db.insert_block(&db_block, &db_block_txs)?;
+        self.db.insert_block(&db_block, &db_block_txs, &txs)?;
         println!(
             "Added block {} with {} txs, height {}",
             block.header.hash, num_txs, next_height
@@ -190,10 +203,18 @@ impl SlpIndexer {
         Ok(())
     }
 
-    fn _handle_block_disconnected(&self, block_disconnected: BlockDisconnected) -> Result<()> {
-        self.db
-            .delete_block(&block_disconnected.block.header.hash)?;
-        println!("Removed block {}", block_disconnected.block.header.hash);
+    fn _handle_block_disconnected(
+        &self,
+        tip: Option<Block>,
+        block: bitcoinsuite_bitcoind_nng::Block,
+    ) -> Result<()> {
+        let txs = Self::_block_txs(&block)?;
+        let tip = tip.unwrap();
+        self.db.delete_block(&block.header.hash, tip.height, &txs)?;
+        println!(
+            "Removed block {} via BlockDisconnected message",
+            block.header.hash
+        );
         Ok(())
     }
 }

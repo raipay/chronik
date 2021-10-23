@@ -22,6 +22,8 @@ bitcoinsuite-error = { path = "../../bitcoinsuite/bitcoinsuite-error" }
 # Fast hashing (not cryptographic)
 seahash = "4.1"
 
+hex = "0.4"
+
 [dev-dependencies]
 tempdir = "0.3"
 pretty_assertions = "1.0"

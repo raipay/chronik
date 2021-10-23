@@ -271,6 +271,7 @@ dependencies = [
  "bitcoinsuite-core",
  "bitcoinsuite-error",
  "byteorder",
+ "hex",
  "pretty_assertions",
  "rocksdb",
  "seahash",
