@@ -3,6 +3,7 @@ mod data;
 mod db;
 mod index;
 mod indexdb;
+mod merge_ops;
 mod outputs;
 mod txs;
 

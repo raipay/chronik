@@ -7,6 +7,7 @@ use zerocopy::{AsBytes, FromBytes, Unaligned};
 
 use crate::{
     data::{interpret, interpret_slice},
+    merge_ops::merge_op_ordered_list,
     Db,
 };
 
@@ -40,8 +41,8 @@ impl<I: Indexable> Index<I> {
         let mut options = Options::default();
         options.set_merge_operator(
             "slp-indexer-rocks.MergeIndex",
-            Self::merge_op,
-            Self::merge_op,
+            merge_op_ordered_list::<I::Serial>,
+            merge_op_ordered_list::<I::Serial>,
         );
         columns.push(ColumnFamilyDescriptor::new(index_cf_name, options));
     }
@@ -112,38 +113,6 @@ impl<I: Indexable> Index<I> {
         serial_bytes.insert(0, flag);
         batch.merge_cf(&index_cf, hash.as_bytes(), &serial_bytes);
         Ok(())
-    }
-
-    fn merge_op(
-        _: &[u8],
-        existing_value: Option<&[u8]>,
-        operands: &mut rocksdb::MergeOperands,
-    ) -> Option<Vec<u8>> {
-        let mut serials = match existing_value {
-            Some(existing_serials) => {
-                let serials: &[I::Serial] = interpret_slice(existing_serials).ok()?;
-                serials.to_vec()
-            }
-            None => vec![],
-        };
-        for operand in operands {
-            match *operand.get(0)? {
-                FLAG_INSERT => {
-                    let key = interpret(&operand[1..]).ok()?;
-                    if let Err(insert_idx) = serials.binary_search(key) {
-                        serials.insert(insert_idx, key.clone());
-                    }
-                }
-                FLAG_DELETE => {
-                    let key = interpret(&operand[1..]).ok()?;
-                    if let Ok(delete_idx) = serials.binary_search(key) {
-                        serials.remove(delete_idx);
-                    }
-                }
-                _ => return None,
-            }
-        }
-        Some(serials.as_slice().as_bytes().to_vec())
     }
 
     fn _inconsistent_error(&self) -> IndexError {

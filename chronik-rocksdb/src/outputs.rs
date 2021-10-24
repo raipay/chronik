@@ -7,14 +7,12 @@ use rocksdb::{ColumnFamilyDescriptor, Direction, IteratorMode, Options, WriteBat
 use zerocopy::{AsBytes, FromBytes, Unaligned, U32};
 
 use crate::{
-    data::{interpret, interpret_slice},
+    data::interpret_slice,
+    merge_ops::{merge_op_ordered_list, PREFIX_DELETE, PREFIX_INSERT},
     Db, TxNum, CF,
 };
 
 pub const CF_OUTPUTS: &str = "outputs";
-
-const PREFIX_INSERT: u8 = b'I';
-const PREFIX_DELETE: u8 = b'D';
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PayloadPrefix {
@@ -64,8 +62,8 @@ impl<'a> OutputsWriter<'a> {
         let mut options = Options::default();
         options.set_merge_operator(
             "slp-indexer-rocks.MergeOutputs",
-            Self::merge_op,
-            Self::merge_op,
+            merge_op_ordered_list::<ScriptEntryData>,
+            merge_op_ordered_list::<ScriptEntryData>,
         );
         columns.push(ColumnFamilyDescriptor::new(CF_OUTPUTS, options));
     }
@@ -166,38 +164,6 @@ impl<'a> OutputsWriter<'a> {
         let page_num =
             ScriptPageNum::from_be_bytes(key[key.len() - PAGE_NUM_SIZE..].try_into().unwrap());
         Ok((page_num as usize * self.conf.page_size + entries.len()) as u32)
-    }
-
-    fn merge_op(
-        _key: &[u8],
-        existing_value: Option<&[u8]>,
-        operands: &mut rocksdb::MergeOperands,
-    ) -> Option<Vec<u8>> {
-        let mut entries = match existing_value {
-            Some(existing_entries) => {
-                let entries = interpret_slice::<ScriptEntryData>(existing_entries).unwrap();
-                entries.to_vec()
-            }
-            None => vec![],
-        };
-        for operand in operands {
-            match *operand.get(0).unwrap() {
-                PREFIX_INSERT => {
-                    let entry = interpret(&operand[1..]).unwrap();
-                    if let Err(insert_idx) = entries.binary_search(entry) {
-                        entries.insert(insert_idx, entry.clone());
-                    }
-                }
-                PREFIX_DELETE => {
-                    let entry = interpret(&operand[1..]).unwrap();
-                    if let Ok(delete_idx) = entries.binary_search(entry) {
-                        entries.remove(delete_idx);
-                    }
-                }
-                _ => return None,
-            }
-        }
-        Some(entries.as_slice().as_bytes().to_vec())
     }
 
     fn script_payloads(script: &Script) -> Vec<(PayloadPrefix, Vec<u8>)> {
