@@ -12,7 +12,7 @@ use bitcoinsuite_core::{
 use bitcoinsuite_error::Result;
 use bitcoinsuite_test_utils::bin_folder;
 use chronik_indexer::SlpIndexer;
-use chronik_rocksdb::{BlockTx, Db, IndexDb, OutputsReader, PayloadPrefix, ScriptEntry, TxEntry};
+use chronik_rocksdb::{BlockTx, Db, IndexDb, OutputsReader, PayloadPrefix, TxEntry, OutpointEntry};
 use pretty_assertions::assert_eq;
 use tempdir::TempDir;
 
@@ -245,7 +245,7 @@ fn check_pages<const N: usize>(
             outputs_reader.page_txs(page_num as u32, prefix, payload_body)?,
             txs.iter()
                 .cloned()
-                .map(|(tx_num, out_idx)| ScriptEntry { tx_num, out_idx })
+                .map(|(tx_num, out_idx)| OutpointEntry { tx_num, out_idx })
                 .collect::<Vec<_>>(),
         );
     }

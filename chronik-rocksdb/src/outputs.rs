@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use bitcoinsuite_core::{Hashed, Script, ScriptVariant, UnhashedTx};
+use bitcoinsuite_core::UnhashedTx;
 use bitcoinsuite_error::Result;
 use rocksdb::{ColumnFamilyDescriptor, Direction, IteratorMode, Options, WriteBatch};
 use zerocopy::{AsBytes, U32};
@@ -8,22 +8,12 @@ use zerocopy::{AsBytes, U32};
 use crate::{
     data::interpret_slice,
     merge_ops::{merge_op_ordered_list, PREFIX_DELETE, PREFIX_INSERT},
-    outpoint_data::OutpointData,
+    outpoint_data::{OutpointData, OutpointEntry},
+    script_payload::{script_payloads, PayloadPrefix},
     Db, TxNum, CF,
 };
 
 pub const CF_OUTPUTS: &str = "outputs";
-
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub enum PayloadPrefix {
-    Other = 0,
-    P2PK = 1,
-    P2PKLegacy = 2,
-    P2PKH = 3,
-    P2SH = 4,
-    P2TRCommitment = 5,
-    P2TRState = 6,
-}
 
 type ScriptPageNum = u32;
 const PAGE_NUM_SIZE: usize = std::mem::size_of::<ScriptPageNum>();
@@ -42,12 +32,6 @@ pub struct OutputsWriter<'a> {
 pub struct OutputsReader<'a> {
     db: &'a Db,
     cf_outputs: &'a CF,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ScriptEntry {
-    pub tx_num: u64,
-    pub out_idx: u32,
 }
 
 impl<'a> OutputsWriter<'a> {
@@ -80,7 +64,7 @@ impl<'a> OutputsWriter<'a> {
         let mut num_outputs_by_payload = HashMap::new();
         for tx in txs {
             for (out_idx, output) in tx.outputs.iter().enumerate() {
-                for (payload_prefix, mut script_payload) in Self::script_payloads(&output.script) {
+                for (payload_prefix, mut script_payload) in script_payloads(&output.script) {
                     script_payload.insert(0, payload_prefix as u8);
                     let num_txs_db = self.get_num_outputs_for_payload(&script_payload)?;
                     let num_txs_map = num_outputs_by_payload
@@ -114,7 +98,7 @@ impl<'a> OutputsWriter<'a> {
         for (tx_idx, tx) in txs.iter().enumerate().rev() {
             let tx_num = first_tx_num + tx_idx as u64;
             for (out_idx, output) in tx.outputs.iter().enumerate().rev() {
-                for (payload_prefix, mut script_payload) in Self::script_payloads(&output.script) {
+                for (payload_prefix, mut script_payload) in script_payloads(&output.script) {
                     script_payload.insert(0, payload_prefix as u8);
                     let num_txs_db = self.get_num_outputs_for_payload(&script_payload)?;
                     let num_txs_map = num_outputs_by_payload
@@ -158,30 +142,6 @@ impl<'a> OutputsWriter<'a> {
             ScriptPageNum::from_be_bytes(key[key.len() - PAGE_NUM_SIZE..].try_into().unwrap());
         Ok((page_num as usize * self.conf.page_size + entries.len()) as u32)
     }
-
-    fn script_payloads(script: &Script) -> Vec<(PayloadPrefix, Vec<u8>)> {
-        use PayloadPrefix::*;
-        match script.parse_variant() {
-            ScriptVariant::P2PK(pubkey) => {
-                vec![(P2PK, pubkey.as_slice().to_vec())]
-            }
-            ScriptVariant::P2PKLegacy(pubkey) => {
-                vec![(P2PKLegacy, pubkey.to_vec())]
-            }
-            ScriptVariant::P2PKH(hash) => vec![(P2PKH, hash.as_slice().to_vec())],
-            ScriptVariant::P2SH(hash) => vec![(P2SH, hash.as_slice().to_vec())],
-            ScriptVariant::P2TR(commitment, None) => {
-                vec![(P2TRCommitment, commitment.as_slice().to_vec())]
-            }
-            ScriptVariant::P2TR(commitment, Some(state)) => vec![
-                (P2TRCommitment, commitment.as_slice().to_vec()),
-                (P2TRState, state.to_vec()),
-            ],
-            ScriptVariant::Other(script) => {
-                vec![(Other, script.bytecode().to_vec())]
-            }
-        }
-    }
 }
 
 fn key_for_script_payload(script_payload: &[u8], page_num: u32) -> Vec<u8> {
@@ -218,7 +178,7 @@ impl<'a> OutputsReader<'a> {
         page_num: ScriptPageNum,
         prefix: PayloadPrefix,
         payload_data: &[u8],
-    ) -> Result<Vec<ScriptEntry>> {
+    ) -> Result<Vec<OutpointEntry>> {
         let script_payload = [[prefix as u8].as_ref(), payload_data].concat();
         let key = key_for_script_payload(&script_payload, page_num);
         let value = match self.db.get(self.cf_outputs, &key)? {
@@ -227,7 +187,7 @@ impl<'a> OutputsReader<'a> {
         };
         let entries = interpret_slice::<OutpointData>(&value)?
             .iter()
-            .map(|entry| ScriptEntry {
+            .map(|entry| OutpointEntry {
                 tx_num: entry.tx_num.0.get(),
                 out_idx: entry.out_idx.get(),
             })
@@ -239,8 +199,8 @@ impl<'a> OutputsReader<'a> {
 #[cfg(test)]
 mod test {
     use crate::{
-        outputs::{key_for_script_payload, OutpointData},
-        Db, OutputsConf, OutputsReader, OutputsWriter, PayloadPrefix, ScriptEntry, TxNum,
+        outpoint_data::OutpointData, outputs::key_for_script_payload, Db, OutpointEntry,
+        OutputsConf, OutputsReader, OutputsWriter, PayloadPrefix, TxNum,
     };
     use bitcoinsuite_core::{ecc::PubKey, Script, ShaRmd160, TxOutput, UnhashedTx};
     use bitcoinsuite_error::Result;
@@ -413,7 +373,7 @@ mod test {
                 outputs_reader.page_txs(page_num as u32, prefix, payload_body)?,
                 txs.iter()
                     .cloned()
-                    .map(|(tx_num, out_idx)| ScriptEntry { tx_num, out_idx })
+                    .map(|(tx_num, out_idx)| OutpointEntry { tx_num, out_idx })
                     .collect::<Vec<_>>(),
             );
             let script_payload = [[prefix as u8].as_ref(), payload_body].concat();

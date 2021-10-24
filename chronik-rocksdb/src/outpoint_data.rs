@@ -5,6 +5,12 @@ use zerocopy::{AsBytes, FromBytes, Unaligned, U32};
 
 use crate::TxNum;
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OutpointEntry {
+    pub tx_num: u64,
+    pub out_idx: u32,
+}
+
 #[derive(Debug, Clone, FromBytes, AsBytes, Unaligned, PartialEq, Eq)]
 #[repr(C)]
 pub struct OutpointData {
