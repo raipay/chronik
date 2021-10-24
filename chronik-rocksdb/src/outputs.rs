@@ -11,7 +11,7 @@ use crate::{
     Db, TxNum, CF,
 };
 
-pub const CF_SCRIPTS: &str = "scripts";
+pub const CF_OUTPUTS: &str = "outputs";
 
 const PREFIX_INSERT: u8 = b'I';
 const PREFIX_DELETE: u8 = b'D';
@@ -37,13 +37,13 @@ pub struct OutputsConf {
 
 pub struct OutputsWriter<'a> {
     db: &'a Db,
-    cf_scripts: &'a CF,
+    cf_outputs: &'a CF,
     conf: OutputsConf,
 }
 
 pub struct OutputsReader<'a> {
     db: &'a Db,
-    cf_scripts: &'a CF,
+    cf_outputs: &'a CF,
 }
 
 #[derive(Debug, Clone, FromBytes, AsBytes, Unaligned, PartialEq, Eq)]
@@ -67,14 +67,14 @@ impl<'a> OutputsWriter<'a> {
             Self::merge_op,
             Self::merge_op,
         );
-        columns.push(ColumnFamilyDescriptor::new(CF_SCRIPTS, options));
+        columns.push(ColumnFamilyDescriptor::new(CF_OUTPUTS, options));
     }
 
     pub fn new(db: &'a Db, conf: OutputsConf) -> Result<Self> {
-        let cf_scripts = db.cf(CF_SCRIPTS)?;
+        let cf_outputs = db.cf(CF_OUTPUTS)?;
         Ok(OutputsWriter {
             db,
-            cf_scripts,
+            cf_outputs,
             conf,
         })
     }
@@ -104,7 +104,7 @@ impl<'a> OutputsWriter<'a> {
                     };
                     let mut value = script_entry.as_bytes().to_vec();
                     value.insert(0, PREFIX_INSERT);
-                    batch.merge_cf(self.cf_scripts, key, value);
+                    batch.merge_cf(self.cf_outputs, key, value);
                     *num_txs_map += 1;
                 }
             }
@@ -138,7 +138,7 @@ impl<'a> OutputsWriter<'a> {
                     };
                     let mut value = script_entry.as_bytes().to_vec();
                     value.insert(0, PREFIX_DELETE);
-                    batch.merge_cf(self.cf_scripts, key, value);
+                    batch.merge_cf(self.cf_outputs, key, value);
                     *num_txs_map += 1;
                 }
             }
@@ -149,7 +149,7 @@ impl<'a> OutputsWriter<'a> {
     fn get_num_outputs_for_payload(&self, payload: &[u8]) -> Result<u32> {
         let last_key = key_for_script_payload(payload, std::u32::MAX);
         let mut iterator = self.db.rocks().iterator_cf(
-            self.cf_scripts,
+            self.cf_outputs,
             IteratorMode::From(&last_key, Direction::Reverse),
         );
         let (key, value) = loop {
@@ -231,8 +231,8 @@ fn key_for_script_payload(script_payload: &[u8], page_num: u32) -> Vec<u8> {
 
 impl<'a> OutputsReader<'a> {
     pub fn new(db: &'a Db) -> Result<Self> {
-        let cf_scripts = db.cf(CF_SCRIPTS)?;
-        Ok(OutputsReader { db, cf_scripts })
+        let cf_outputs = db.cf(CF_OUTPUTS)?;
+        Ok(OutputsReader { db, cf_outputs })
     }
 
     pub fn num_pages_by_payload(
@@ -242,7 +242,7 @@ impl<'a> OutputsReader<'a> {
     ) -> Result<usize> {
         let script_payload = [[prefix as u8].as_ref(), payload_data].concat();
         let iterator = self.db.rocks().iterator_cf(
-            self.cf_scripts,
+            self.cf_outputs,
             IteratorMode::From(&script_payload, Direction::Forward),
         );
         let num_pages = iterator
@@ -262,7 +262,7 @@ impl<'a> OutputsReader<'a> {
     ) -> Result<Vec<ScriptEntry>> {
         let script_payload = [[prefix as u8].as_ref(), payload_data].concat();
         let key = key_for_script_payload(&script_payload, page_num);
-        let value = match self.db.get(self.cf_scripts, &key)? {
+        let value = match self.db.get(self.cf_outputs, &key)? {
             Some(value) => value,
             None => return Ok(vec![]),
         };
@@ -476,7 +476,7 @@ mod test {
             let key = key_for_script_payload(&script_payload, page_num as u32);
             let value = outputs_reader
                 .db
-                .get(outputs_reader.cf_scripts, &key)?
+                .get(outputs_reader.cf_outputs, &key)?
                 .unwrap();
             let entry_data = txs
                 .iter()
