@@ -4,6 +4,7 @@ mod db;
 mod index;
 mod indexdb;
 mod merge_ops;
+mod outpoint_data;
 mod outputs;
 mod txs;
 

@@ -170,7 +170,11 @@ impl SlpIndexer {
             .collect()
     }
 
-    fn _handle_block(&self, tip: Option<Block>, block: bitcoinsuite_bitcoind_nng::Block) -> Result<()> {
+    fn _handle_block(
+        &self,
+        tip: Option<Block>,
+        block: bitcoinsuite_bitcoind_nng::Block,
+    ) -> Result<()> {
         let next_height = tip.as_ref().map(|tip| tip.height + 1).unwrap_or(0);
         let txs = Self::_block_txs(&block)?;
         let db_block = Block {

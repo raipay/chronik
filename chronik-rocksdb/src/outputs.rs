@@ -1,14 +1,14 @@
-use std::{cmp::Ordering, collections::HashMap};
+use std::collections::HashMap;
 
 use bitcoinsuite_core::{Hashed, Script, ScriptVariant, UnhashedTx};
 use bitcoinsuite_error::Result;
-use byteorder::BE;
 use rocksdb::{ColumnFamilyDescriptor, Direction, IteratorMode, Options, WriteBatch};
-use zerocopy::{AsBytes, FromBytes, Unaligned, U32};
+use zerocopy::{AsBytes, U32};
 
 use crate::{
     data::interpret_slice,
     merge_ops::{merge_op_ordered_list, PREFIX_DELETE, PREFIX_INSERT},
+    outpoint_data::OutpointData,
     Db, TxNum, CF,
 };
 
@@ -44,13 +44,6 @@ pub struct OutputsReader<'a> {
     cf_outputs: &'a CF,
 }
 
-#[derive(Debug, Clone, FromBytes, AsBytes, Unaligned, PartialEq, Eq)]
-#[repr(C)]
-struct ScriptEntryData {
-    tx_num: TxNum,
-    out_idx: U32<BE>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ScriptEntry {
     pub tx_num: u64,
@@ -62,8 +55,8 @@ impl<'a> OutputsWriter<'a> {
         let mut options = Options::default();
         options.set_merge_operator(
             "slp-indexer-rocks.MergeOutputs",
-            merge_op_ordered_list::<ScriptEntryData>,
-            merge_op_ordered_list::<ScriptEntryData>,
+            merge_op_ordered_list::<OutpointData>,
+            merge_op_ordered_list::<OutpointData>,
         );
         columns.push(ColumnFamilyDescriptor::new(CF_OUTPUTS, options));
     }
@@ -96,7 +89,7 @@ impl<'a> OutputsWriter<'a> {
                     let num_txs = num_txs_db + *num_txs_map;
                     let page_num = num_txs / self.conf.page_size as u32;
                     let key = key_for_script_payload(&script_payload, page_num);
-                    let script_entry = ScriptEntryData {
+                    let script_entry = OutpointData {
                         tx_num: TxNum(tx_num.into()),
                         out_idx: U32::new(out_idx as u32),
                     };
@@ -130,7 +123,7 @@ impl<'a> OutputsWriter<'a> {
                     let num_txs = num_txs_db - *num_txs_map - 1;
                     let page_num = num_txs / self.conf.page_size as u32;
                     let key = key_for_script_payload(&script_payload, page_num);
-                    let script_entry = ScriptEntryData {
+                    let script_entry = OutpointData {
                         tx_num: TxNum(tx_num.into()),
                         out_idx: U32::new(out_idx as u32),
                     };
@@ -160,7 +153,7 @@ impl<'a> OutputsWriter<'a> {
                 None => return Ok(0),
             };
         };
-        let entries = interpret_slice::<ScriptEntryData>(&value)?;
+        let entries = interpret_slice::<OutpointData>(&value)?;
         let page_num =
             ScriptPageNum::from_be_bytes(key[key.len() - PAGE_NUM_SIZE..].try_into().unwrap());
         Ok((page_num as usize * self.conf.page_size + entries.len()) as u32)
@@ -232,7 +225,7 @@ impl<'a> OutputsReader<'a> {
             Some(value) => value,
             None => return Ok(vec![]),
         };
-        let entries = interpret_slice::<ScriptEntryData>(&value)?
+        let entries = interpret_slice::<OutpointData>(&value)?
             .iter()
             .map(|entry| ScriptEntry {
                 tx_num: entry.tx_num.0.get(),
@@ -243,25 +236,10 @@ impl<'a> OutputsReader<'a> {
     }
 }
 
-impl Ord for ScriptEntryData {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        match self.tx_num.0.get().cmp(&other.tx_num.0.get()) {
-            Ordering::Equal => self.out_idx.get().cmp(&other.out_idx.get()),
-            ordering => ordering,
-        }
-    }
-}
-
-impl PartialOrd for ScriptEntryData {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
 #[cfg(test)]
 mod test {
     use crate::{
-        outputs::{key_for_script_payload, ScriptEntryData},
+        outputs::{key_for_script_payload, OutpointData},
         Db, OutputsConf, OutputsReader, OutputsWriter, PayloadPrefix, ScriptEntry, TxNum,
     };
     use bitcoinsuite_core::{ecc::PubKey, Script, ShaRmd160, TxOutput, UnhashedTx};
@@ -447,7 +425,7 @@ mod test {
             let entry_data = txs
                 .iter()
                 .cloned()
-                .map(|(tx_num, out_idx)| ScriptEntryData {
+                .map(|(tx_num, out_idx)| OutpointData {
                     tx_num: TxNum(tx_num.into()),
                     out_idx: out_idx.into(),
                 })
