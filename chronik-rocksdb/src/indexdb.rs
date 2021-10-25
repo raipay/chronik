@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use crate::{
     Block, BlockReader, BlockTxs, BlockWriter, Db, OutputsConf, OutputsReader, OutputsWriter,
-    TxReader, TxWriter, UtxosReader, UtxosWriter,
+    SpendsReader, SpendsWriter, TxReader, TxWriter, UtxosReader, UtxosWriter,
 };
 
 pub struct IndexDb {
@@ -42,6 +42,10 @@ impl IndexDb {
         UtxosReader::new(&self.db)
     }
 
+    pub fn spends(&self) -> Result<SpendsReader> {
+        SpendsReader::new(&self.db)
+    }
+
     pub fn insert_block<'b>(
         &self,
         block: &Block,
@@ -54,6 +58,7 @@ impl IndexDb {
         let conf = OutputsConf { page_size: 1000 };
         let output_writer = OutputsWriter::new(&self.db, conf)?;
         let utxo_writer = UtxosWriter::new(&self.db)?;
+        let spends_writer = SpendsWriter::new(&self.db)?;
         let mut batch = WriteBatch::default();
         block_writer.insert(&mut batch, block)?;
         let first_tx_num = tx_writer.insert_block_txs(&mut batch, block_txs)?;
@@ -62,10 +67,11 @@ impl IndexDb {
         utxo_writer.insert_block_txs(
             &mut batch,
             first_tx_num,
-            block_txids,
+            block_txids.clone(),
             txs,
             block_spent_scripts,
         )?;
+        spends_writer.insert_block_txs(&mut batch, first_tx_num, block_txids, txs)?;
         self.db.write_batch(batch)?;
         Ok(())
     }
@@ -74,7 +80,7 @@ impl IndexDb {
         &self,
         block_hash: &Sha256d,
         height: i32,
-        block_txids: impl IntoIterator<Item = &'b Sha256d>,
+        block_txids: impl IntoIterator<Item = &'b Sha256d> + Clone,
         txs: &[UnhashedTx],
         block_spent_scripts: impl IntoIterator<Item = impl IntoIterator<Item = &'b Script>>,
     ) -> Result<()> {
@@ -83,6 +89,7 @@ impl IndexDb {
         let conf = OutputsConf { page_size: 1000 };
         let output_writer = OutputsWriter::new(&self.db, conf)?;
         let utxo_writer = UtxosWriter::new(&self.db)?;
+        let spends_writer = SpendsWriter::new(&self.db)?;
         let tx_reader = TxReader::new(&self.db)?;
         let first_tx_num = tx_reader.first_tx_num_by_block(height)?.unwrap();
         let mut batch = WriteBatch::default();
@@ -96,10 +103,11 @@ impl IndexDb {
         utxo_writer.delete_block_txs(
             &mut batch,
             first_tx_num,
-            block_txids,
+            block_txids.clone(),
             txs,
             block_spent_scripts,
         )?;
+        spends_writer.delete_block_txs(&mut batch, first_tx_num, block_txids, txs)?;
         self.db.write_batch(batch)?;
         Ok(())
     }

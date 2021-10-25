@@ -5,7 +5,8 @@ use bitcoinsuite_error::{ErrorMeta, Result};
 use thiserror::Error;
 
 use chronik_rocksdb::{
-    Block, BlockReader, BlockTxs, IndexDb, OutputsReader, TxEntry, TxReader, UtxosReader,
+    Block, BlockReader, BlockTxs, IndexDb, OutputsReader, SpendsReader, TxEntry, TxReader,
+    UtxosReader,
 };
 
 pub struct SlpIndexer {
@@ -163,6 +164,10 @@ impl SlpIndexer {
 
     pub fn utxos(&self) -> Result<UtxosReader> {
         self.db.utxos()
+    }
+
+    pub fn spends(&self) -> Result<SpendsReader> {
+        self.db.spends()
     }
 
     fn _block_txs(block: &bitcoinsuite_bitcoind_nng::Block) -> Result<Vec<UnhashedTx>> {
