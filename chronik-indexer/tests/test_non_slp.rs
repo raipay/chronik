@@ -12,7 +12,9 @@ use bitcoinsuite_core::{
 use bitcoinsuite_error::Result;
 use bitcoinsuite_test_utils::bin_folder;
 use chronik_indexer::SlpIndexer;
-use chronik_rocksdb::{BlockTx, Db, IndexDb, OutpointEntry, OutputsReader, PayloadPrefix, TxEntry};
+use chronik_rocksdb::{
+    BlockTx, Db, IndexDb, OutpointEntry, OutputsReader, PayloadPrefix, TxEntry, UtxosReader,
+};
 use pretty_assertions::assert_eq;
 use tempdir::TempDir;
 
@@ -101,7 +103,14 @@ fn test_index_genesis(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Result
          1ec112de5c384df7ba0b8d578a4c702b6bf11d5f"
     )?;
     let r = &slp_indexer.outputs()?;
+    let db_utxos = &slp_indexer.utxos()?;
     check_pages(r, PayloadPrefix::P2PKLegacy, &genesis_payload, [&[(0, 1)]])?;
+    check_utxos(
+        db_utxos,
+        PayloadPrefix::P2PKLegacy,
+        &genesis_payload,
+        [(0, 1)],
+    )?;
     Ok(())
 }
 
@@ -136,7 +145,9 @@ fn test_get_out_of_ibd(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Resul
         111,
     )?;
     let r = &slp_indexer.outputs()?;
+    let db_utxos = &slp_indexer.utxos()?;
     check_pages(r, PayloadPrefix::P2SH, &[0; 20], [&[(1, 1)]])?;
+    check_utxos(db_utxos, PayloadPrefix::P2SH, &[0; 20], [(1, 1)])?;
 
     // catchup finished
     assert!(slp_indexer.catchup_step()?);
@@ -154,10 +165,12 @@ fn test_reorg_empty(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Result<(
     let db_txs = slp_indexer.txs()?;
     let db_outputs = slp_indexer.outputs()?;
     let r = &db_outputs;
+    let db_utxos = &slp_indexer.utxos()?;
     let tip = db_blocks.tip()?.unwrap();
     let old_txid = get_coinbase_txid(bitcoind, &tip.hash)?;
     check_tx_indexed(slp_indexer, &old_txid, 1, 557, 111)?;
     check_pages(r, PayloadPrefix::P2SH, &[0; 20], [&[(1, 1)]])?;
+    check_utxos(db_utxos, PayloadPrefix::P2SH, &[0; 20], [(1, 1)])?;
     let block1 = build_lotus_block(
         tip.prev_hash.clone(),
         tip.timestamp,
@@ -195,7 +208,9 @@ fn test_reorg_empty(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Result<(
         217,
     )?;
     check_pages(r, PayloadPrefix::P2SH, &[0; 20], [])?;
+    check_utxos(db_utxos, PayloadPrefix::P2SH, &[0; 20], [])?;
     check_pages(r, PayloadPrefix::P2SH, anyone_payload, [])?;
+    check_utxos(db_utxos, PayloadPrefix::P2SH, anyone_payload, [])?;
 
     // next message is BlockConnected for block1
     slp_indexer.process_next_msg()?;
@@ -212,6 +227,7 @@ fn test_reorg_empty(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Result<(
         180,
     )?;
     check_pages(r, PayloadPrefix::P2SH, anyone_payload, [&[(1, 1)]])?;
+    check_utxos(db_utxos, PayloadPrefix::P2SH, anyone_payload, [(1, 1)])?;
 
     // next message is BlockConnected for block2
     slp_indexer.process_next_msg()?;
@@ -226,6 +242,12 @@ fn test_reorg_empty(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Result<(
         180,
     )?;
     check_pages(r, PayloadPrefix::P2SH, anyone_payload, [&[(1, 1), (2, 1)]])?;
+    check_utxos(
+        db_utxos,
+        PayloadPrefix::P2SH,
+        anyone_payload,
+        [(1, 1), (2, 1)],
+    )?;
 
     Ok(())
 }
@@ -249,5 +271,21 @@ fn check_pages<const N: usize>(
                 .collect::<Vec<_>>(),
         );
     }
+    Ok(())
+}
+
+fn check_utxos<const N: usize>(
+    utxo_reader: &UtxosReader,
+    prefix: PayloadPrefix,
+    payload_body: &[u8],
+    expected_txs: [(u64, u32); N],
+) -> Result<()> {
+    assert_eq!(
+        utxo_reader.utxos(prefix, payload_body)?,
+        expected_txs
+            .into_iter()
+            .map(|(tx_num, out_idx)| OutpointEntry { tx_num, out_idx })
+            .collect::<Vec<_>>(),
+    );
     Ok(())
 }

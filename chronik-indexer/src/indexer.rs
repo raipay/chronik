@@ -4,7 +4,9 @@ use bitcoinsuite_core::{BitcoinCode, Bytes, Hashed, Sha256d, UnhashedTx};
 use bitcoinsuite_error::{ErrorMeta, Result};
 use thiserror::Error;
 
-use chronik_rocksdb::{Block, BlockReader, BlockTxs, IndexDb, OutputsReader, TxEntry, TxReader};
+use chronik_rocksdb::{
+    Block, BlockReader, BlockTxs, IndexDb, OutputsReader, TxEntry, TxReader, UtxosReader,
+};
 
 pub struct SlpIndexer {
     db: IndexDb,
@@ -159,6 +161,10 @@ impl SlpIndexer {
         self.db.outputs()
     }
 
+    pub fn utxos(&self) -> Result<UtxosReader> {
+        self.db.utxos()
+    }
+
     fn _block_txs(block: &bitcoinsuite_bitcoind_nng::Block) -> Result<Vec<UnhashedTx>> {
         block
             .txs
@@ -188,9 +194,9 @@ impl SlpIndexer {
         let num_txs = block.txs.len();
         let db_txs = block
             .txs
-            .into_iter()
+            .iter()
             .map(|tx| TxEntry {
-                txid: tx.tx.txid,
+                txid: tx.tx.txid.clone(),
                 data_pos: tx.data_pos,
                 tx_size: tx.tx.raw.len() as u32,
             })
@@ -199,7 +205,14 @@ impl SlpIndexer {
             txs: db_txs,
             block_height: next_height,
         };
-        self.db.insert_block(&db_block, &db_block_txs, &txs)?;
+        let block_spent_outputs = block.txs.iter().filter_map(|tx| {
+            tx.tx
+                .spent_coins
+                .as_ref()
+                .map(|outputs| outputs.iter().map(|output| &output.tx_output.script))
+        });
+        self.db
+            .insert_block(&db_block, &db_block_txs, &txs, block_spent_outputs)?;
         println!(
             "Added block {} with {} txs, height {}",
             block.header.hash, num_txs, next_height
@@ -214,7 +227,20 @@ impl SlpIndexer {
     ) -> Result<()> {
         let txs = Self::_block_txs(&block)?;
         let tip = tip.unwrap();
-        self.db.delete_block(&block.header.hash, tip.height, &txs)?;
+        let block_txids = block.txs.iter().map(|tx| &tx.tx.txid);
+        let block_spent_outputs = block.txs.iter().filter_map(|tx| {
+            tx.tx
+                .spent_coins
+                .as_ref()
+                .map(|outputs| outputs.iter().map(|output| &output.tx_output.script))
+        });
+        self.db.delete_block(
+            &block.header.hash,
+            tip.height,
+            block_txids,
+            &txs,
+            block_spent_outputs,
+        )?;
         println!(
             "Removed block {} via BlockDisconnected message",
             block.header.hash
