@@ -2,7 +2,7 @@ use std::path::Path;
 
 use rocksdb::{ColumnFamily, ColumnFamilyDescriptor, Options, WriteBatch};
 
-use crate::{BlockWriter, OutputsWriter, TxWriter, UtxosWriter};
+use crate::{BlockWriter, OutputsWriter, SpendsWriter, TxWriter, UtxosWriter};
 use bitcoinsuite_error::{ErrorMeta, Result, WrapErr};
 use thiserror::Error;
 
@@ -32,6 +32,7 @@ impl Db {
         TxWriter::add_cfs(&mut cfs);
         OutputsWriter::add_cfs(&mut cfs);
         UtxosWriter::add_cfs(&mut cfs);
+        SpendsWriter::add_cfs(&mut cfs);
         Self::open_with_cfs(path, cfs)
     }
 
