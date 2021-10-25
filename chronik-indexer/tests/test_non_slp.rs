@@ -12,7 +12,7 @@ use bitcoinsuite_core::{
 use bitcoinsuite_error::Result;
 use bitcoinsuite_test_utils::bin_folder;
 use chronik_indexer::SlpIndexer;
-use chronik_rocksdb::{BlockTx, Db, IndexDb, OutputsReader, PayloadPrefix, TxEntry, OutpointEntry};
+use chronik_rocksdb::{BlockTx, Db, IndexDb, OutpointEntry, OutputsReader, PayloadPrefix, TxEntry};
 use pretty_assertions::assert_eq;
 use tempdir::TempDir;
 
