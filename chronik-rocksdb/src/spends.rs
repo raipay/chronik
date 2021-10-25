@@ -9,7 +9,9 @@ use zerocopy::{AsBytes, FromBytes, Unaligned, U32};
 
 use crate::{
     data::interpret_slice,
-    merge_ops::{merge_op_ordered_list, PREFIX_DELETE, PREFIX_INSERT},
+    merge_ops::{
+        full_merge_ordered_list, partial_merge_ordered_list, PREFIX_DELETE, PREFIX_INSERT,
+    },
     Db, TxNum, TxReader, CF,
 };
 
@@ -59,8 +61,8 @@ impl<'a> SpendsWriter<'a> {
         let mut options = Options::default();
         options.set_merge_operator(
             "slp-indexer-rocks.MergeSpends",
-            merge_op_ordered_list::<SpendData>,
-            merge_op_ordered_list::<SpendData>,
+            full_merge_ordered_list::<SpendData>,
+            partial_merge_ordered_list::<SpendData>,
         );
         columns.push(ColumnFamilyDescriptor::new(CF_SPENDS, options));
     }

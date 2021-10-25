@@ -7,7 +7,9 @@ use zerocopy::{AsBytes, U32};
 
 use crate::{
     data::interpret_slice,
-    merge_ops::{merge_op_ordered_list, PREFIX_DELETE, PREFIX_INSERT},
+    merge_ops::{
+        full_merge_ordered_list, partial_merge_ordered_list, PREFIX_DELETE, PREFIX_INSERT,
+    },
     outpoint_data::{OutpointData, OutpointEntry},
     script_payload::{script_payloads, PayloadPrefix},
     Db, TxNum, CF,
@@ -39,8 +41,8 @@ impl<'a> OutputsWriter<'a> {
         let mut options = Options::default();
         options.set_merge_operator(
             "slp-indexer-rocks.MergeOutputs",
-            merge_op_ordered_list::<OutpointData>,
-            merge_op_ordered_list::<OutpointData>,
+            full_merge_ordered_list::<OutpointData>,
+            partial_merge_ordered_list::<OutpointData>,
         );
         columns.push(ColumnFamilyDescriptor::new(CF_OUTPUTS, options));
     }

@@ -7,7 +7,7 @@ use zerocopy::{AsBytes, FromBytes, Unaligned};
 
 use crate::{
     data::{interpret, interpret_slice},
-    merge_ops::merge_op_ordered_list,
+    merge_ops::{full_merge_ordered_list, partial_merge_ordered_list},
     Db,
 };
 
@@ -41,8 +41,8 @@ impl<I: Indexable> Index<I> {
         let mut options = Options::default();
         options.set_merge_operator(
             "slp-indexer-rocks.MergeIndex",
-            merge_op_ordered_list::<I::Serial>,
-            merge_op_ordered_list::<I::Serial>,
+            full_merge_ordered_list::<I::Serial>,
+            partial_merge_ordered_list::<I::Serial>,
         );
         columns.push(ColumnFamilyDescriptor::new(index_cf_name, options));
     }

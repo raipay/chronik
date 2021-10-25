@@ -41,7 +41,7 @@ impl SlpIndexer {
         rpc_interface: RpcInterface,
         pub_interface: PubInterface,
     ) -> Result<Self> {
-        pub_interface.subscribe("blkconnected")?;
+        pub_interface.subscribe("------------")?;
         Ok(SlpIndexer {
             db,
             bitcoind,
@@ -93,10 +93,13 @@ impl SlpIndexer {
         } else {
             // Node not fully sync'd, but index up-to-date, so we wait for the next block
             if node_height == index_height {
+                self.pub_interface.unsubscribe("------------")?;
+                self.pub_interface.subscribe("blkconnected")?;
                 let msg = self.pub_interface.recv()?;
                 match msg {
                     Message::BlockConnected(block_connected) => {
                         self._handle_block(tip, block_connected.block)?;
+                        self.pub_interface.subscribe("------------")?;
                         return Ok(false);
                     }
                     msg => return Err(SlpIndexerError::UnexpectedPluginMessage(msg).into()),
@@ -124,6 +127,7 @@ impl SlpIndexer {
     }
 
     pub fn leave_catchup(&self) -> Result<()> {
+        self.pub_interface.unsubscribe("------------")?;
         self.pub_interface.subscribe("blkconnected")?;
         self.pub_interface.subscribe("blkdisconctd")?;
         Ok(())

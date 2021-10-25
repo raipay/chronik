@@ -5,7 +5,15 @@ use crate::data::{interpret, interpret_slice};
 pub const PREFIX_INSERT: u8 = b'I';
 pub const PREFIX_DELETE: u8 = b'D';
 
-pub fn merge_op_ordered_list<T: AsBytes + FromBytes + Unaligned + Clone + Ord>(
+pub fn partial_merge_ordered_list<T: AsBytes + FromBytes + Unaligned + Clone + Ord>(
+    _key: &[u8],
+    _existing_value: Option<&[u8]>,
+    _operands: &mut rocksdb::MergeOperands,
+) -> Option<Vec<u8>> {
+    None
+}
+
+pub fn full_merge_ordered_list<T: AsBytes + FromBytes + Unaligned + Clone + Ord>(
     _key: &[u8],
     existing_value: Option<&[u8]>,
     operands: &mut rocksdb::MergeOperands,
@@ -31,7 +39,9 @@ pub fn merge_op_ordered_list<T: AsBytes + FromBytes + Unaligned + Clone + Ord>(
                     entries.remove(delete_idx);
                 }
             }
-            _ => return None,
+            b => {
+                panic!("Wrong merge byte: {}", b);
+            },
         }
     }
     Some(entries.as_slice().as_bytes().to_vec())
