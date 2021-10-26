@@ -41,7 +41,7 @@ pub fn full_merge_ordered_list<T: AsBytes + FromBytes + Unaligned + Clone + Ord>
             }
             b => {
                 panic!("Wrong merge byte: {}", b);
-            },
+            }
         }
     }
     Some(entries.as_slice().as_bytes().to_vec())

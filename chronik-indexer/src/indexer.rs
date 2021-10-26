@@ -96,6 +96,8 @@ impl SlpIndexer {
                 self.pub_interface.unsubscribe("------------")?;
                 self.pub_interface.subscribe("blkconnected")?;
                 let msg = self.pub_interface.recv()?;
+                self.pub_interface.unsubscribe("blkconnected")?;
+                self.pub_interface.subscribe("------------")?;
                 match msg {
                     Message::BlockConnected(block_connected) => {
                         self._handle_block(tip, block_connected.block)?;
