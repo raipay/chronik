@@ -1,0 +1,17 @@
+[package]
+name = "chronik-rocksdb-bench"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chronik-rocksdb = { path = "../chronik-rocksdb" }
+
+# Bitcoin stuff
+bitcoinsuite-core = { path = "../../bitcoinsuite/bitcoinsuite-core" }
+bitcoinsuite-error = { path = "../../bitcoinsuite/bitcoinsuite-error" }
+bitcoinsuite-test-utils = { path = "../../bitcoinsuite/bitcoinsuite-test-utils" }
+bitcoinsuite-test-utils-blockchain = { path = "../../bitcoinsuite/bitcoinsuite-test-utils-blockchain" }
+
+rand = "0.8"
+
+tempdir = "0.3"

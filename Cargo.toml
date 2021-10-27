@@ -3,4 +3,5 @@
 members = [
     "chronik-indexer",
     "chronik-rocksdb",
+    "chronik-rocksdb-bench",
 ]
