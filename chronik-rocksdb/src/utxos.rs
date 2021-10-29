@@ -20,7 +20,6 @@ script -> [(tx_num, out_idx)]
 
 pub struct UtxosWriter<'a> {
     db: &'a Db,
-    cf_utxos: &'a CF,
 }
 
 pub struct UtxosReader<'a> {
@@ -37,6 +36,11 @@ pub enum UtxosError {
 
 use self::UtxosError::*;
 
+fn _assert_utxos_writer_send_sync() {
+    _assert_send_sync(|_: UtxosWriter| ());
+}
+fn _assert_send_sync<T: Send + Sync>(_: impl Fn(T)) {}
+
 impl<'a> UtxosWriter<'a> {
     pub fn add_cfs(columns: &mut Vec<ColumnFamilyDescriptor>) {
         let options = Options::default();
@@ -44,8 +48,8 @@ impl<'a> UtxosWriter<'a> {
     }
 
     pub fn new(db: &'a Db) -> Result<Self> {
-        let cf_utxos = db.cf(CF_UTXOS)?;
-        Ok(UtxosWriter { db, cf_utxos })
+        let _ = db.cf(CF_UTXOS)?;
+        Ok(UtxosWriter { db })
     }
 
     pub fn insert_block_txs<'b>(
@@ -67,7 +71,7 @@ impl<'a> UtxosWriter<'a> {
                     script_payload.insert(0, payload_prefix as u8);
                     update_map_or_db_entry(
                         self.db,
-                        self.cf_utxos,
+                        self.cf_utxos(),
                         &mut new_utxos,
                         script_payload,
                         |outpoints| {
@@ -100,7 +104,7 @@ impl<'a> UtxosWriter<'a> {
                     script_payload.insert(0, payload_prefix as u8);
                     update_map_or_db_entry(
                         self.db,
-                        self.cf_utxos,
+                        self.cf_utxos(),
                         &mut new_utxos,
                         script_payload,
                         |outpoints| {
@@ -120,8 +124,8 @@ impl<'a> UtxosWriter<'a> {
         timings.start_timer();
         for (key, value) in new_utxos {
             match value.is_empty() {
-                true => batch.delete_cf(self.cf_utxos, key),
-                false => batch.put_cf(self.cf_utxos, key, value.as_bytes()),
+                true => batch.delete_cf(self.cf_utxos(), key),
+                false => batch.put_cf(self.cf_utxos(), key, value.as_bytes()),
             }
         }
         timings.stop_timer("update_batch");
@@ -155,7 +159,7 @@ impl<'a> UtxosWriter<'a> {
                     script_payload.insert(0, payload_prefix as u8);
                     update_map_or_db_entry(
                         self.db,
-                        self.cf_utxos,
+                        self.cf_utxos(),
                         &mut new_utxos,
                         script_payload,
                         |outpoints| {
@@ -178,7 +182,7 @@ impl<'a> UtxosWriter<'a> {
                     script_payload.insert(0, payload_prefix as u8);
                     update_map_or_db_entry(
                         self.db,
-                        self.cf_utxos,
+                        self.cf_utxos(),
                         &mut new_utxos,
                         script_payload,
                         |outpoints| {
@@ -197,11 +201,15 @@ impl<'a> UtxosWriter<'a> {
         }
         for (key, value) in new_utxos {
             match value.is_empty() {
-                true => batch.delete_cf(self.cf_utxos, key),
-                false => batch.put_cf(self.cf_utxos, key, value.as_bytes()),
+                true => batch.delete_cf(self.cf_utxos(), key),
+                false => batch.put_cf(self.cf_utxos(), key, value.as_bytes()),
             }
         }
         Ok(())
+    }
+
+    fn cf_utxos(&self) -> &CF {
+        self.db.cf(CF_UTXOS).unwrap()
     }
 }
 

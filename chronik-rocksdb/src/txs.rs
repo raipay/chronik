@@ -62,9 +62,6 @@ pub struct TxWriter<'a> {
 
 pub struct TxReader<'a> {
     db: &'a Db,
-    cf_txs: &'a CF,
-    cf_tx_block: &'a CF,
-    cf_first_tx_by_block: &'a CF,
     txid_index: Index<TxIndexable>,
 }
 
@@ -82,6 +79,11 @@ pub enum TxsError {
 use self::TxsError::*;
 
 struct TxIndexable;
+
+fn _assert_txs_reader_send_sync() {
+    _assert_send_sync(|_: TxReader| ());
+}
+fn _assert_send_sync<T: Send + Sync>(_: impl Fn(T)) {}
 
 impl<'a> TxWriter<'a> {
     pub fn add_cfs(columns: &mut Vec<ColumnFamilyDescriptor>) {
@@ -180,14 +182,11 @@ impl<'a> TxWriter<'a> {
 
 impl<'a> TxReader<'a> {
     pub fn new(db: &'a Db) -> Result<Self> {
-        let cf_txs = db.cf(CF_TXS)?;
-        let cf_tx_block = db.cf(CF_BLOCK_BY_FIRST_TX)?;
-        let cf_first_tx_by_block = db.cf(CF_FIRST_TX_BY_BLOCK)?;
+        let _ = db.cf(CF_TXS)?;
+        let _ = db.cf(CF_BLOCK_BY_FIRST_TX)?;
+        let _ = db.cf(CF_FIRST_TX_BY_BLOCK)?;
         Ok(TxReader {
             db,
-            cf_txs,
-            cf_tx_block,
-            cf_first_tx_by_block,
             txid_index: txid_index(),
         })
     }
@@ -210,7 +209,7 @@ impl<'a> TxReader<'a> {
 
     fn block_height_by_tx_num(&self, tx_num: TxNum) -> Result<i32> {
         let mut tx_block = self.db.rocks().iterator_cf(
-            self.cf_tx_block,
+            self.cf_tx_block(),
             IteratorMode::From(tx_num.as_bytes(), Direction::Reverse),
         );
         let block_height = match tx_block.next() {
@@ -229,7 +228,7 @@ impl<'a> TxReader<'a> {
 
     pub fn by_tx_num(&self, tx_num: u64) -> Result<Option<BlockTx>> {
         let tx_num = TxNum(tx_num.into());
-        let tx_entry = match self.db.get(self.cf_txs, tx_num.as_bytes())? {
+        let tx_entry = match self.db.get(self.cf_txs(), tx_num.as_bytes())? {
             Some(entry) => entry,
             None => return Ok(None),
         };
@@ -249,13 +248,25 @@ impl<'a> TxReader<'a> {
         let block_height_inner = BlockHeightInner::new(block_height);
         let first_tx_num = match self
             .db
-            .get(self.cf_first_tx_by_block, block_height_inner.as_bytes())?
+            .get(self.cf_first_tx_by_block(), block_height_inner.as_bytes())?
         {
             Some(first_tx_num) => first_tx_num,
             None => return Ok(None),
         };
         let tx_num = interpret::<TxNum>(&first_tx_num)?;
         Ok(Some(tx_num.0.get()))
+    }
+
+    fn cf_txs(&self) -> &CF {
+        self.db.cf(CF_TXS).unwrap()
+    }
+
+    fn cf_tx_block(&self) -> &CF {
+        self.db.cf(CF_BLOCK_BY_FIRST_TX).unwrap()
+    }
+
+    fn cf_first_tx_by_block(&self) -> &CF {
+        self.db.cf(CF_FIRST_TX_BY_BLOCK).unwrap()
     }
 }
 
