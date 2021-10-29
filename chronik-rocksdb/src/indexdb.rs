@@ -1,3 +1,5 @@
+use std::sync::{RwLock, RwLockReadGuard};
+
 use bitcoinsuite_core::{Script, Sha256d, UnhashedTx};
 use bitcoinsuite_error::{ErrorMeta, Result};
 use rocksdb::WriteBatch;
@@ -5,11 +7,19 @@ use thiserror::Error;
 
 use crate::{
     Block, BlockReader, BlockTxs, BlockWriter, Db, OutputsConf, OutputsReader, OutputsWriter,
-    SpendsReader, SpendsWriter, TxReader, TxWriter, UtxosReader, UtxosWriter,
+    SpendsReader, SpendsWriter, Timings, TxReader, TxWriter, UtxosReader, UtxosWriter,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct IndexTimings {
+    pub timings: Timings,
+    pub outputs_timings: Timings,
+    pub utxos_timings: Timings,
+}
 
 pub struct IndexDb {
     db: Db,
+    timings: RwLock<IndexTimings>,
 }
 
 #[derive(Debug, Error, ErrorMeta)]
@@ -23,7 +33,10 @@ use self::IndexDbError::*;
 
 impl IndexDb {
     pub fn new(db: Db) -> Self {
-        IndexDb { db }
+        IndexDb {
+            db,
+            timings: Default::default(),
+        }
     }
 
     pub fn blocks(&self) -> Result<BlockReader> {
@@ -46,6 +59,10 @@ impl IndexDb {
         SpendsReader::new(&self.db)
     }
 
+    pub fn timings(&self) -> RwLockReadGuard<IndexTimings> {
+        self.timings.read().unwrap()
+    }
+
     pub fn insert_block<'b>(
         &self,
         block: &Block,
@@ -53,6 +70,7 @@ impl IndexDb {
         txs: &[UnhashedTx],
         block_spent_scripts: impl IntoIterator<Item = impl IntoIterator<Item = &'b Script>>,
     ) -> Result<()> {
+        let mut timings = self.timings.write().unwrap();
         let block_writer = BlockWriter::new(&self.db)?;
         let tx_writer = TxWriter::new(&self.db)?;
         let conf = OutputsConf { page_size: 1000 };
@@ -60,19 +78,40 @@ impl IndexDb {
         let utxo_writer = UtxosWriter::new(&self.db)?;
         let spends_writer = SpendsWriter::new(&self.db)?;
         let mut batch = WriteBatch::default();
+
+        timings.timings.start_timer();
         block_writer.insert(&mut batch, block)?;
+        timings.timings.stop_timer("blocks");
+
+        timings.timings.start_timer();
         let first_tx_num = tx_writer.insert_block_txs(&mut batch, block_txs)?;
-        output_writer.insert_block_txs(&mut batch, first_tx_num, txs)?;
+        timings.timings.stop_timer("txs");
+
+        timings.timings.start_timer();
+        let outputs_timings = output_writer.insert_block_txs(&mut batch, first_tx_num, txs)?;
+        timings.timings.stop_timer("outputs");
+        timings.outputs_timings.add(&outputs_timings);
+
+        timings.timings.start_timer();
         let block_txids = block_txs.txs.iter().map(|tx| &tx.txid);
-        utxo_writer.insert_block_txs(
+        let utxos_timings = utxo_writer.insert_block_txs(
             &mut batch,
             first_tx_num,
             block_txids.clone(),
             txs,
             block_spent_scripts,
         )?;
+        timings.timings.stop_timer("utxos");
+        timings.utxos_timings.add(&utxos_timings);
+
+        timings.timings.start_timer();
         spends_writer.insert_block_txs(&mut batch, first_tx_num, block_txids, txs)?;
+        timings.timings.stop_timer("spends");
+
+        timings.timings.start_timer();
         self.db.write_batch(batch)?;
+        timings.timings.stop_timer("insert");
+
         Ok(())
     }
 

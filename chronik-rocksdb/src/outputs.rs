@@ -12,7 +12,7 @@ use crate::{
     },
     outpoint_data::{OutpointData, OutpointEntry},
     script_payload::{script_payloads, PayloadPrefix},
-    Db, TxNum, CF,
+    Db, Timings, TxNum, CF,
 };
 
 pub const CF_OUTPUTS: &str = "outputs";
@@ -61,14 +61,19 @@ impl<'a> OutputsWriter<'a> {
         batch: &mut WriteBatch,
         first_tx_num: u64,
         txs: &[UnhashedTx],
-    ) -> Result<()> {
+    ) -> Result<Timings> {
         let mut tx_num = first_tx_num;
         let mut num_outputs_by_payload = HashMap::new();
+        let mut timings = Timings::default();
         for tx in txs {
             for (out_idx, output) in tx.outputs.iter().enumerate() {
                 for (payload_prefix, mut script_payload) in script_payloads(&output.script) {
+                    timings.start_timer();
                     script_payload.insert(0, payload_prefix as u8);
                     let num_txs_db = self.get_num_outputs_for_payload(&script_payload)?;
+                    timings.stop_timer("get_num_outputs");
+
+                    timings.start_timer();
                     let num_txs_map = num_outputs_by_payload
                         .entry(script_payload.clone())
                         .or_insert(0);
@@ -81,13 +86,18 @@ impl<'a> OutputsWriter<'a> {
                     };
                     let mut value = script_entry.as_bytes().to_vec();
                     value.insert(0, PREFIX_INSERT);
+                    timings.stop_timer("prepare_value");
+
+                    timings.start_timer();
                     batch.merge_cf(self.cf_outputs, key, value);
+                    timings.stop_timer("merge_into_batch");
+
                     *num_txs_map += 1;
                 }
             }
             tx_num += 1;
         }
-        Ok(())
+        Ok(timings)
     }
 
     pub fn delete_block_txs(

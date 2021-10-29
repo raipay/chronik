@@ -85,7 +85,7 @@ fn main() -> Result<()> {
         // last "1000" means unique address
         1000, 200, 50, 10, 5, 4, 3, 2, 1, 1000,
     ];
-    let script_counter_dist = WeightedIndex::new(script_counter_weights).unwrap();
+    let script_counter_dist = WeightedIndex::new(script_counter_weights)?;
     let mut rng = rand::rngs::StdRng::from_seed([42; 32]);
     for i in 0..num_blocks {
         if i % 10 == 0 {
@@ -203,7 +203,14 @@ fn main() -> Result<()> {
         db.insert_block(&db_block, &block_txs, &txs, block_spent_scripts.iter())?;
     }
     let dt = t.elapsed();
-    println!("Took {:.3}s", dt.as_secs_f64());
+    println!("Took {:?}", dt);
+    let timings = db.timings();
+    println!("Overview:");
+    println!("{}", timings.timings);
+    println!("Outputs:");
+    println!("{}", timings.outputs_timings);
+    println!("UTXOs:");
+    println!("{}", timings.utxos_timings);
 
     Ok(())
 }

@@ -8,7 +8,7 @@ use zerocopy::{AsBytes, U32};
 
 use crate::{
     data::interpret_slice, outpoint_data::OutpointData, script_payload::script_payloads, Db,
-    OutpointEntry, PayloadPrefix, TxNum, TxReader, CF,
+    OutpointEntry, PayloadPrefix, Timings, TxNum, TxReader, CF,
 };
 
 pub const CF_UTXOS: &str = "utxos";
@@ -55,9 +55,10 @@ impl<'a> UtxosWriter<'a> {
         block_txids: impl IntoIterator<Item = &'b Sha256d>,
         txs: &[UnhashedTx],
         block_spent_scripts: impl IntoIterator<Item = impl IntoIterator<Item = &'b Script>>,
-    ) -> Result<()> {
+    ) -> Result<Timings> {
         let mut tx_num = first_tx_num;
         let mut new_tx_nums = HashMap::new();
+        let mut timings = Timings::default();
         let mut new_utxos = HashMap::<Vec<u8>, Vec<OutpointData>>::new();
         for (tx, txid) in txs.iter().zip(block_txids) {
             new_tx_nums.insert(txid, tx_num);
@@ -83,6 +84,8 @@ impl<'a> UtxosWriter<'a> {
             }
             tx_num += 1;
         }
+        timings.stop_timer("insert");
+        timings.start_timer();
         let tx_reader = TxReader::new(self.db)?;
         for (tx, spent_scripts) in txs.iter().skip(1).zip(block_spent_scripts) {
             for (input, spent_script) in tx.inputs.iter().zip(spent_scripts) {
@@ -112,13 +115,16 @@ impl<'a> UtxosWriter<'a> {
                 }
             }
         }
+        timings.stop_timer("delete");
+        timings.start_timer();
         for (key, value) in new_utxos {
             match value.is_empty() {
                 true => batch.delete_cf(self.cf_utxos, key),
                 false => batch.put_cf(self.cf_utxos, key, value.as_bytes()),
             }
         }
-        Ok(())
+        timings.stop_timer("update_batch");
+        Ok(timings)
     }
 
     pub fn delete_block_txs<'b>(
