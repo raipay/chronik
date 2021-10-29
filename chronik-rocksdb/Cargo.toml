@@ -24,6 +24,8 @@ seahash = "4.1"
 
 hex = "0.4"
 
+lru = "0.7"
+
 [dev-dependencies]
 tempdir = "0.3"
 pretty_assertions = "1.0"

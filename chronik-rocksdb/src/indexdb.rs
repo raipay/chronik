@@ -7,7 +7,8 @@ use thiserror::Error;
 
 use crate::{
     Block, BlockReader, BlockTxs, BlockWriter, Db, OutputsConf, OutputsReader, OutputsWriter,
-    SpendsReader, SpendsWriter, Timings, TxReader, TxWriter, UtxosReader, UtxosWriter,
+    OutputsWriterCache, SpendsReader, SpendsWriter, Timings, TxReader, TxWriter, UtxosReader,
+    UtxosWriter,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
@@ -20,6 +21,10 @@ pub struct IndexTimings {
 pub struct IndexDb {
     db: Db,
     timings: RwLock<IndexTimings>,
+}
+
+pub struct IndexCache {
+    outputs_cache: OutputsWriterCache,
 }
 
 #[derive(Debug, Error, ErrorMeta)]
@@ -69,6 +74,7 @@ impl IndexDb {
         block_txs: &'b BlockTxs,
         txs: &[UnhashedTx],
         block_spent_scripts: impl IntoIterator<Item = impl IntoIterator<Item = &'b Script>>,
+        cache: &mut IndexCache,
     ) -> Result<()> {
         let mut timings = self.timings.write().unwrap();
         let block_writer = BlockWriter::new(&self.db)?;
@@ -88,7 +94,12 @@ impl IndexDb {
         timings.timings.stop_timer("txs");
 
         timings.timings.start_timer();
-        let outputs_timings = output_writer.insert_block_txs(&mut batch, first_tx_num, txs)?;
+        let outputs_timings = output_writer.insert_block_txs(
+            &mut batch,
+            first_tx_num,
+            txs,
+            &mut cache.outputs_cache,
+        )?;
         timings.timings.stop_timer("outputs");
         timings.outputs_timings.add(&outputs_timings);
 
@@ -122,6 +133,7 @@ impl IndexDb {
         block_txids: impl IntoIterator<Item = &'b Sha256d> + Clone,
         txs: &[UnhashedTx],
         block_spent_scripts: impl IntoIterator<Item = impl IntoIterator<Item = &'b Script>>,
+        cache: &mut IndexCache,
     ) -> Result<()> {
         let block_writer = BlockWriter::new(&self.db)?;
         let tx_writer = TxWriter::new(&self.db)?;
@@ -138,7 +150,7 @@ impl IndexDb {
             .by_hash(block_hash)?
             .ok_or_else(|| UnknownBlock(block_hash.clone()))?;
         tx_writer.delete_block_txs(&mut batch, block.height)?;
-        output_writer.delete_block_txs(&mut batch, first_tx_num, txs)?;
+        output_writer.delete_block_txs(&mut batch, first_tx_num, txs, &mut cache.outputs_cache)?;
         utxo_writer.delete_block_txs(
             &mut batch,
             first_tx_num,
@@ -149,5 +161,13 @@ impl IndexDb {
         spends_writer.delete_block_txs(&mut batch, first_tx_num, block_txids, txs)?;
         self.db.write_batch(batch)?;
         Ok(())
+    }
+}
+
+impl IndexCache {
+    pub fn new(outputs_capacity: usize) -> Self {
+        IndexCache {
+            outputs_cache: OutputsWriterCache::with_capacity(outputs_capacity),
+        }
     }
 }

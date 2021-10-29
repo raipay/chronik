@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use bitcoinsuite_core::UnhashedTx;
 use bitcoinsuite_error::Result;
+use lru::LruCache;
 use rocksdb::{ColumnFamilyDescriptor, Direction, IteratorMode, Options, WriteBatch};
 use zerocopy::{AsBytes, U32};
 
@@ -36,6 +37,11 @@ pub struct OutputsReader<'a> {
     cf_outputs: &'a CF,
 }
 
+pub struct OutputsWriterCache {
+    capacity: usize,
+    num_outputs_by_script: LruCache<Vec<u8>, u32>,
+}
+
 impl<'a> OutputsWriter<'a> {
     pub fn add_cfs(columns: &mut Vec<ColumnFamilyDescriptor>) {
         let mut options = Options::default();
@@ -61,6 +67,7 @@ impl<'a> OutputsWriter<'a> {
         batch: &mut WriteBatch,
         first_tx_num: u64,
         txs: &[UnhashedTx],
+        outputs_cache: &mut OutputsWriterCache,
     ) -> Result<Timings> {
         let mut tx_num = first_tx_num;
         let mut num_outputs_by_payload = HashMap::new();
@@ -70,14 +77,21 @@ impl<'a> OutputsWriter<'a> {
                 for (payload_prefix, mut script_payload) in script_payloads(&output.script) {
                     timings.start_timer();
                     script_payload.insert(0, payload_prefix as u8);
-                    let num_txs_db = self.get_num_outputs_for_payload(&script_payload)?;
-                    timings.stop_timer("get_num_outputs");
-
-                    timings.start_timer();
                     let num_txs_map = num_outputs_by_payload
                         .entry(script_payload.clone())
                         .or_insert(0);
-                    let num_txs = num_txs_db + *num_txs_map;
+                    let num_txs = match outputs_cache.get_num_outputs_by_payload(
+                        self.db,
+                        self.cf_outputs,
+                        &self.conf,
+                        &script_payload,
+                    )? {
+                        Ok(num_txs) => num_txs,
+                        Err(num_txs_db) => num_txs_db + *num_txs_map,
+                    };
+                    timings.stop_timer("get_num_outputs");
+
+                    timings.start_timer();
                     let page_num = num_txs / self.conf.page_size as u32;
                     let key = key_for_script_payload(&script_payload, page_num);
                     let script_entry = OutpointData {
@@ -93,6 +107,7 @@ impl<'a> OutputsWriter<'a> {
                     timings.stop_timer("merge_into_batch");
 
                     *num_txs_map += 1;
+                    outputs_cache.increment_num_outputs(&script_payload);
                 }
             }
             tx_num += 1;
@@ -105,6 +120,7 @@ impl<'a> OutputsWriter<'a> {
         batch: &mut WriteBatch,
         first_tx_num: u64,
         txs: &[UnhashedTx],
+        outputs_cache: &mut OutputsWriterCache,
     ) -> Result<()> {
         let mut num_outputs_by_payload = HashMap::new();
         for (tx_idx, tx) in txs.iter().enumerate().rev() {
@@ -112,12 +128,19 @@ impl<'a> OutputsWriter<'a> {
             for (out_idx, output) in tx.outputs.iter().enumerate().rev() {
                 for (payload_prefix, mut script_payload) in script_payloads(&output.script) {
                     script_payload.insert(0, payload_prefix as u8);
-                    let num_txs_db = self.get_num_outputs_for_payload(&script_payload)?;
-                    let num_txs_map = num_outputs_by_payload
+                    let num_outputs_map = num_outputs_by_payload
                         .entry(script_payload.clone())
                         .or_insert(0);
-                    let num_txs = num_txs_db - *num_txs_map - 1;
-                    let page_num = num_txs / self.conf.page_size as u32;
+                    let output_idx = match outputs_cache.get_num_outputs_by_payload(
+                        self.db,
+                        self.cf_outputs,
+                        &self.conf,
+                        &script_payload,
+                    )? {
+                        Ok(num_outputs) => num_outputs - 1,
+                        Err(num_outputs_db) => num_outputs_db - *num_outputs_map - 1,
+                    };
+                    let page_num = output_idx / self.conf.page_size as u32;
                     let key = key_for_script_payload(&script_payload, page_num);
                     let script_entry = OutpointData {
                         tx_num: TxNum(tx_num.into()),
@@ -126,33 +149,12 @@ impl<'a> OutputsWriter<'a> {
                     let mut value = script_entry.as_bytes().to_vec();
                     value.insert(0, PREFIX_DELETE);
                     batch.merge_cf(self.cf_outputs, key, value);
-                    *num_txs_map += 1;
+                    *num_outputs_map += 1;
+                    outputs_cache.decrement_num_outputs(&script_payload);
                 }
             }
         }
         Ok(())
-    }
-
-    fn get_num_outputs_for_payload(&self, payload: &[u8]) -> Result<u32> {
-        let last_key = key_for_script_payload(payload, std::u32::MAX);
-        let mut iterator = self.db.rocks().iterator_cf(
-            self.cf_outputs,
-            IteratorMode::From(&last_key, Direction::Reverse),
-        );
-        let (key, value) = loop {
-            match iterator.next() {
-                Some((key, value)) => {
-                    if !value.is_empty() {
-                        break (key, value);
-                    }
-                }
-                None => return Ok(0),
-            };
-        };
-        let entries = interpret_slice::<OutpointData>(&value)?;
-        let page_num =
-            ScriptPageNum::from_be_bytes(key[key.len() - PAGE_NUM_SIZE..].try_into().unwrap());
-        Ok((page_num as usize * self.conf.page_size + entries.len()) as u32)
     }
 }
 
@@ -208,11 +210,74 @@ impl<'a> OutputsReader<'a> {
     }
 }
 
+impl OutputsWriterCache {
+    pub fn with_capacity(capacity: usize) -> Self {
+        OutputsWriterCache {
+            capacity,
+            num_outputs_by_script: LruCache::new(capacity),
+        }
+    }
+
+    fn get_num_outputs_by_payload(
+        &mut self,
+        db: &Db,
+        cf: &CF,
+        conf: &OutputsConf,
+        payload: &[u8],
+    ) -> Result<std::result::Result<u32, u32>> {
+        if self.capacity > 0 {
+            if let Some(&num_outputs) = self.num_outputs_by_script.get(payload) {
+                return Ok(Ok(num_outputs));
+            }
+        }
+        let last_key = key_for_script_payload(payload, std::u32::MAX);
+        let mut iterator = db
+            .rocks()
+            .iterator_cf(cf, IteratorMode::From(&last_key, Direction::Reverse));
+        let (key, value) = loop {
+            match iterator.next() {
+                Some((key, value)) => {
+                    if !value.is_empty() {
+                        break (key, value);
+                    }
+                }
+                None => {
+                    if self.capacity > 0 {
+                        self.num_outputs_by_script.put(payload.to_vec(), 0);
+                    }
+                    return Ok(Err(0));
+                }
+            };
+        };
+        let entries = interpret_slice::<OutpointData>(&value)?;
+        let page_num =
+            ScriptPageNum::from_be_bytes(key[key.len() - PAGE_NUM_SIZE..].try_into().unwrap());
+        let num_outputs = (page_num * conf.page_size as u32) + entries.len() as u32;
+        if self.capacity > 0 {
+            self.num_outputs_by_script
+                .put(payload.to_vec(), num_outputs);
+        }
+        Ok(Err(num_outputs))
+    }
+
+    fn increment_num_outputs(&mut self, payload: &[u8]) {
+        if let Some(num_outputs) = self.num_outputs_by_script.get_mut(payload) {
+            *num_outputs += 1;
+        }
+    }
+
+    fn decrement_num_outputs(&mut self, payload: &[u8]) {
+        if let Some(num_outputs) = self.num_outputs_by_script.get_mut(payload) {
+            *num_outputs -= 1;
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use crate::{
         outpoint_data::OutpointData, outputs::key_for_script_payload, Db, OutpointEntry,
-        OutputsConf, OutputsReader, OutputsWriter, PayloadPrefix, TxNum,
+        OutputsConf, OutputsReader, OutputsWriter, OutputsWriterCache, PayloadPrefix, TxNum,
     };
     use bitcoinsuite_core::{ecc::PubKey, Script, ShaRmd160, TxOutput, UnhashedTx};
     use bitcoinsuite_error::Result;
@@ -226,6 +291,7 @@ mod test {
         bitcoinsuite_error::install()?;
         let tempdir = tempdir::TempDir::new("slp-indexer-rocks--scripts")?;
         let db = Db::open(tempdir.path())?;
+        let mut cache = OutputsWriterCache::with_capacity(4);
         let conf = OutputsConf { page_size: 5 };
         let outputs_writer = OutputsWriter::new(&db, conf)?;
         let outputs_reader = OutputsReader::new(&db)?;
@@ -277,7 +343,7 @@ mod test {
         }
         {
             let mut batch = WriteBatch::default();
-            outputs_writer.insert_block_txs(&mut batch, blocks[0].0, &blocks[0].1)?;
+            outputs_writer.insert_block_txs(&mut batch, blocks[0].0, &blocks[0].1, &mut cache)?;
             db.write_batch(batch)?;
             check_pages(r, P2PKH, &payload1, [&[(0, 0), (1, 0), (1, 2), (1, 3)]])?;
             check_pages(r, P2PKH, &payload2, [&[(0, 1), (1, 1)]])?;
@@ -285,17 +351,17 @@ mod test {
         }
         {
             let mut batch = WriteBatch::default();
-            outputs_writer.delete_block_txs(&mut batch, blocks[0].0, &blocks[0].1)?;
+            outputs_writer.delete_block_txs(&mut batch, blocks[0].0, &blocks[0].1, &mut cache)?;
             db.write_batch(batch)?;
             check_pages(r, P2PKH, &payload1, [])?;
             check_pages(r, P2PKH, &payload2, [])?;
         }
         {
             let mut batch = WriteBatch::default();
-            outputs_writer.insert_block_txs(&mut batch, blocks[0].0, &blocks[0].1)?;
+            outputs_writer.insert_block_txs(&mut batch, blocks[0].0, &blocks[0].1, &mut cache)?;
             db.write_batch(batch)?;
             let mut batch = WriteBatch::default();
-            outputs_writer.insert_block_txs(&mut batch, blocks[1].0, &blocks[1].1)?;
+            outputs_writer.insert_block_txs(&mut batch, blocks[1].0, &blocks[1].1, &mut cache)?;
             db.write_batch(batch)?;
             check_pages(
                 r,
@@ -313,7 +379,7 @@ mod test {
         }
         {
             let mut batch = WriteBatch::default();
-            outputs_writer.insert_block_txs(&mut batch, blocks[2].0, &blocks[2].1)?;
+            outputs_writer.insert_block_txs(&mut batch, blocks[2].0, &blocks[2].1, &mut cache)?;
             db.write_batch(batch)?;
             check_pages(
                 r,
@@ -331,7 +397,7 @@ mod test {
         }
         {
             let mut batch = WriteBatch::default();
-            outputs_writer.delete_block_txs(&mut batch, blocks[2].0, &blocks[2].1)?;
+            outputs_writer.delete_block_txs(&mut batch, blocks[2].0, &blocks[2].1, &mut cache)?;
             db.write_batch(batch)?;
             check_pages(
                 r,
@@ -349,7 +415,7 @@ mod test {
         }
         {
             let mut batch = WriteBatch::default();
-            outputs_writer.delete_block_txs(&mut batch, blocks[1].0, &blocks[1].1)?;
+            outputs_writer.delete_block_txs(&mut batch, blocks[1].0, &blocks[1].1, &mut cache)?;
             db.write_batch(batch)?;
             check_pages(r, P2PKH, &payload1, [&[(0, 0), (1, 0), (1, 2), (1, 3)]])?;
             check_pages(r, P2PKH, &payload2, [&[(0, 1), (1, 1)]])?;
@@ -359,7 +425,7 @@ mod test {
         }
         {
             let mut batch = WriteBatch::default();
-            outputs_writer.delete_block_txs(&mut batch, blocks[0].0, &blocks[0].1)?;
+            outputs_writer.delete_block_txs(&mut batch, blocks[0].0, &blocks[0].1, &mut cache)?;
             db.write_batch(batch)?;
             check_pages(r, P2PKH, &payload1, [])?;
             check_pages(r, P2PKH, &payload2, [])?;

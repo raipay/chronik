@@ -6,12 +6,13 @@ use bitcoinsuite_core::{
 };
 use bitcoinsuite_error::Result;
 use bitcoinsuite_test_utils_blockchain::build_tx;
+use chronik_rocksdb::{Block, BlockTxs, Db, IndexCache, IndexDb, TxEntry};
 use rand::{distributions::WeightedIndex, prelude::Distribution, Rng, SeedableRng};
-use chronik_rocksdb::{Block, BlockTxs, Db, IndexDb, TxEntry};
 use tempdir::TempDir;
 
 fn main() -> Result<()> {
     let num_blocks = 200;
+    let cache_size = 10_000;
     let mut blocks = Vec::new();
 
     let anyone_script = Script::from_slice(&[0x51]);
@@ -170,14 +171,16 @@ fn main() -> Result<()> {
 
     bitcoinsuite_error::install()?;
     println!("Inserting blocks...");
+    println!("Cache size: {}", cache_size);
     let dir = TempDir::new("chronik-rocksdb-bench")?;
     let db = Db::open(dir.path().join("index.rocksdb"))?;
     let db = IndexDb::new(db);
+    let mut cache = IndexCache::new(cache_size);
     let t = Instant::now();
-    for (block_height, (block, block_spent_scripts)) in blocks.into_iter().enumerate() {
+    for (block_height, (block, block_spent_scripts)) in blocks.iter().enumerate() {
         let db_block = Block {
             hash: block.header.calc_hash(),
-            prev_hash: block.header.prev_block,
+            prev_hash: block.header.prev_block.clone(),
             height: block_height as i32,
             n_bits: block.header.bits,
             timestamp: block.header.timestamp.into(),
@@ -197,10 +200,16 @@ fn main() -> Result<()> {
         };
         let txs = block
             .txs
-            .into_iter()
-            .map(|tx| tx.into_unhashed_tx())
+            .iter()
+            .map(|tx| tx.unhashed_tx().clone())
             .collect::<Vec<_>>();
-        db.insert_block(&db_block, &block_txs, &txs, block_spent_scripts.iter())?;
+        db.insert_block(
+            &db_block,
+            &block_txs,
+            &txs,
+            block_spent_scripts.iter(),
+            &mut cache,
+        )?;
     }
     let dt = t.elapsed();
     println!("Took {:?}", dt);

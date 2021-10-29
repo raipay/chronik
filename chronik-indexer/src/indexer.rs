@@ -5,8 +5,8 @@ use bitcoinsuite_error::{ErrorMeta, Result};
 use thiserror::Error;
 
 use chronik_rocksdb::{
-    Block, BlockReader, BlockTxs, IndexDb, OutputsReader, SpendsReader, TxEntry, TxReader,
-    UtxosReader,
+    Block, BlockReader, BlockTxs, IndexCache, IndexDb, OutputsReader, SpendsReader, TxEntry,
+    TxReader, UtxosReader,
 };
 
 pub struct SlpIndexer {
@@ -14,6 +14,7 @@ pub struct SlpIndexer {
     bitcoind: BitcoinCli,
     rpc_interface: RpcInterface,
     pub_interface: PubInterface,
+    cache: IndexCache,
 }
 
 #[derive(Debug, Error, ErrorMeta)]
@@ -40,6 +41,7 @@ impl SlpIndexer {
         bitcoind: BitcoinCli,
         rpc_interface: RpcInterface,
         pub_interface: PubInterface,
+        cache: IndexCache,
     ) -> Result<Self> {
         pub_interface.subscribe("------------")?;
         Ok(SlpIndexer {
@@ -47,14 +49,14 @@ impl SlpIndexer {
             bitcoind,
             rpc_interface,
             pub_interface,
+            cache,
         })
     }
 
     /// returns whether Initial Block Download has finished and the index is sync'd
-    pub fn catchup_step(&self) -> Result<bool> {
+    pub fn catchup_step(&mut self) -> Result<bool> {
         let blockchain_info = self.bitcoind.cmd_json("getblockchaininfo", &[])?;
-        let db_blocks = self.db.blocks()?;
-        let tip = db_blocks.tip()?;
+        let tip = self.db.blocks()?.tip()?;
         let tip_ref = tip.as_ref();
         let index_height = tip_ref.map(|block| block.height).unwrap_or(-1);
         let index_best_block_hash = tip_ref.map(|block| block.hash.clone()).unwrap_or_default();
@@ -118,7 +120,8 @@ impl SlpIndexer {
         );
         let t_handle_blocks = std::time::Instant::now();
         for block in blocks {
-            self._handle_block(db_blocks.tip()?, block)?;
+            let tip = self.db.blocks()?.tip()?;
+            self._handle_block(tip, block)?;
         }
         println!(
             "t_handle_blocks: {}",
@@ -135,7 +138,7 @@ impl SlpIndexer {
         Ok(())
     }
 
-    pub fn process_next_msg(&self) -> Result<()> {
+    pub fn process_next_msg(&mut self) -> Result<()> {
         let msg = self.pub_interface.recv()?;
         match msg {
             Message::BlockConnected(block_connected) => {
@@ -188,7 +191,7 @@ impl SlpIndexer {
     }
 
     fn _handle_block(
-        &self,
+        &mut self,
         tip: Option<Block>,
         block: bitcoinsuite_bitcoind_nng::Block,
     ) -> Result<()> {
@@ -222,8 +225,13 @@ impl SlpIndexer {
                 .as_ref()
                 .map(|outputs| outputs.iter().map(|output| &output.tx_output.script))
         });
-        self.db
-            .insert_block(&db_block, &db_block_txs, &txs, block_spent_outputs)?;
+        self.db.insert_block(
+            &db_block,
+            &db_block_txs,
+            &txs,
+            block_spent_outputs,
+            &mut self.cache,
+        )?;
         println!(
             "Added block {} with {} txs, height {}",
             block.header.hash, num_txs, next_height
@@ -232,7 +240,7 @@ impl SlpIndexer {
     }
 
     fn _handle_block_disconnected(
-        &self,
+        &mut self,
         tip: Option<Block>,
         block: bitcoinsuite_bitcoind_nng::Block,
     ) -> Result<()> {
@@ -251,6 +259,7 @@ impl SlpIndexer {
             block_txids,
             &txs,
             block_spent_outputs,
+            &mut self.cache,
         )?;
         println!(
             "Removed block {} via BlockDisconnected message",

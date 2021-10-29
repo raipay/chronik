@@ -13,7 +13,8 @@ use bitcoinsuite_error::Result;
 use bitcoinsuite_test_utils::bin_folder;
 use chronik_indexer::SlpIndexer;
 use chronik_rocksdb::{
-    BlockTx, Db, IndexDb, OutpointEntry, OutputsReader, PayloadPrefix, TxEntry, UtxosReader,
+    BlockTx, Db, IndexCache, IndexDb, OutpointEntry, OutputsReader, PayloadPrefix, TxEntry,
+    UtxosReader,
 };
 use pretty_assertions::assert_eq;
 use tempdir::TempDir;
@@ -43,10 +44,12 @@ fn test_non_slp() -> Result<()> {
     let db = Db::open(dir.path().join("index.rocksdb"))?;
     let db = IndexDb::new(db);
     let bitcoin_cli = instance.cli();
-    let slp_indexer = SlpIndexer::new(db, bitcoin_cli.clone(), rpc_interface, pub_interface)?;
-    test_index_genesis(&slp_indexer, bitcoin_cli)?;
-    test_get_out_of_ibd(&slp_indexer, bitcoin_cli)?;
-    test_reorg_empty(&slp_indexer, bitcoin_cli)?;
+    let cache = IndexCache::new(10);
+    let mut slp_indexer =
+        SlpIndexer::new(db, bitcoin_cli.clone(), rpc_interface, pub_interface, cache)?;
+    test_index_genesis(&mut slp_indexer, bitcoin_cli)?;
+    test_get_out_of_ibd(&mut slp_indexer, bitcoin_cli)?;
+    test_reorg_empty(&mut slp_indexer, bitcoin_cli)?;
     instance.cleanup()?;
     Ok(())
 }
@@ -79,7 +82,7 @@ fn check_tx_indexed(
     Ok(())
 }
 
-fn test_index_genesis(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Result<()> {
+fn test_index_genesis(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Result<()> {
     let info = bitcoind.cmd_json("getblockchaininfo", &[])?;
     assert!(info["initialblockdownload"].as_bool().unwrap());
     assert_eq!(info["blocks"], 0);
@@ -88,6 +91,7 @@ fn test_index_genesis(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Result
     assert_eq!(db_blocks.tip()?, None);
     // index genesis block
     assert!(!slp_indexer.catchup_step()?);
+    let db_blocks = slp_indexer.blocks()?;
     assert_eq!(db_blocks.height()?, 0);
     let tip = db_blocks.tip()?.unwrap();
     assert_eq!(tip.hash.to_hex_be(), info["bestblockhash"]);
@@ -114,7 +118,7 @@ fn test_index_genesis(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Result
     Ok(())
 }
 
-fn test_get_out_of_ibd(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Result<()> {
+fn test_get_out_of_ibd(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Result<()> {
     let prev_info = bitcoind.cmd_json("getblockchaininfo", &[])?;
     // generate block delayed
     let gen_handle = std::thread::spawn({
@@ -131,8 +135,7 @@ fn test_get_out_of_ibd(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Resul
     assert!(!slp_indexer.catchup_step()?);
     gen_handle.join().unwrap();
     let cur_info = bitcoind.cmd_json("getblockchaininfo", &[])?;
-    let db_blocks = slp_indexer.blocks()?;
-    let tip = db_blocks.tip()?.unwrap();
+    let tip = slp_indexer.blocks()?.tip()?.unwrap();
     assert_eq!(tip.prev_hash.to_hex_be(), prev_info["bestblockhash"]);
     assert_eq!(tip.hash.to_hex_be(), cur_info["bestblockhash"]);
     assert_eq!(prev_info["initialblockdownload"], true);
@@ -156,21 +159,26 @@ fn test_get_out_of_ibd(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Resul
     Ok(())
 }
 
-fn test_reorg_empty(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Result<()> {
+fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Result<()> {
     let anyone_payload = ShaRmd160::digest(Bytes::from_bytes(vec![0x51]));
     let anyone_script = Script::p2sh(&anyone_payload);
     let anyone_payload = anyone_payload.as_slice();
     // build two empty blocks that reorg the previous block
-    let db_blocks = slp_indexer.blocks()?;
-    let db_txs = slp_indexer.txs()?;
-    let db_outputs = slp_indexer.outputs()?;
-    let r = &db_outputs;
-    let db_utxos = &slp_indexer.utxos()?;
-    let tip = db_blocks.tip()?.unwrap();
+    let tip = slp_indexer.blocks()?.tip()?.unwrap();
     let old_txid = get_coinbase_txid(bitcoind, &tip.hash)?;
     check_tx_indexed(slp_indexer, &old_txid, 1, 557, 111)?;
-    check_pages(r, PayloadPrefix::P2SH, &[0; 20], [&[(1, 1)]])?;
-    check_utxos(db_utxos, PayloadPrefix::P2SH, &[0; 20], [(1, 1)])?;
+    check_pages(
+        &slp_indexer.outputs()?,
+        PayloadPrefix::P2SH,
+        &[0; 20],
+        [&[(1, 1)]],
+    )?;
+    check_utxos(
+        &slp_indexer.utxos()?,
+        PayloadPrefix::P2SH,
+        &[0; 20],
+        [(1, 1)],
+    )?;
     let block1 = build_lotus_block(
         tip.prev_hash.clone(),
         tip.timestamp,
@@ -197,9 +205,9 @@ fn test_reorg_empty(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Result<(
     // first message is BlockDisconnected
     slp_indexer.process_next_msg()?;
     // tip is moved back one block
-    let new_tip = db_blocks.tip()?.unwrap();
+    let new_tip = slp_indexer.blocks()?.tip()?.unwrap();
     assert_eq!(new_tip.hash, tip.prev_hash);
-    assert_eq!(db_txs.by_txid(&old_txid)?, None);
+    assert_eq!(slp_indexer.txs()?.by_txid(&old_txid)?, None);
     check_tx_indexed(
         slp_indexer,
         &get_coinbase_txid(bitcoind, &new_tip.hash)?,
@@ -207,18 +215,28 @@ fn test_reorg_empty(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Result<(
         170,
         217,
     )?;
-    check_pages(r, PayloadPrefix::P2SH, &[0; 20], [])?;
-    check_utxos(db_utxos, PayloadPrefix::P2SH, &[0; 20], [])?;
-    check_pages(r, PayloadPrefix::P2SH, anyone_payload, [])?;
-    check_utxos(db_utxos, PayloadPrefix::P2SH, anyone_payload, [])?;
+    check_pages(&slp_indexer.outputs()?, PayloadPrefix::P2SH, &[0; 20], [])?;
+    check_utxos(&slp_indexer.utxos()?, PayloadPrefix::P2SH, &[0; 20], [])?;
+    check_pages(
+        &slp_indexer.outputs()?,
+        PayloadPrefix::P2SH,
+        anyone_payload,
+        [],
+    )?;
+    check_utxos(
+        &slp_indexer.utxos()?,
+        PayloadPrefix::P2SH,
+        anyone_payload,
+        [],
+    )?;
 
     // next message is BlockConnected for block1
     slp_indexer.process_next_msg()?;
     // tip updated to block1
-    let block1_tip = db_blocks.tip()?.unwrap();
+    let block1_tip = slp_indexer.blocks()?.tip()?.unwrap();
     assert_eq!(block1_tip.hash, block1.header.calc_hash());
     assert_eq!(block1_tip.prev_hash, new_tip.hash);
-    assert_eq!(db_txs.by_txid(&old_txid)?, None);
+    assert_eq!(slp_indexer.txs()?.by_txid(&old_txid)?, None);
     check_tx_indexed(
         slp_indexer,
         &get_coinbase_txid(bitcoind, &block1_tip.hash)?,
@@ -226,12 +244,22 @@ fn test_reorg_empty(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Result<(
         838,
         180,
     )?;
-    check_pages(r, PayloadPrefix::P2SH, anyone_payload, [&[(1, 1)]])?;
-    check_utxos(db_utxos, PayloadPrefix::P2SH, anyone_payload, [(1, 1)])?;
+    check_pages(
+        &slp_indexer.outputs()?,
+        PayloadPrefix::P2SH,
+        anyone_payload,
+        [&[(1, 1)]],
+    )?;
+    check_utxos(
+        &slp_indexer.utxos()?,
+        PayloadPrefix::P2SH,
+        anyone_payload,
+        [(1, 1)],
+    )?;
 
     // next message is BlockConnected for block2
     slp_indexer.process_next_msg()?;
-    let block2_tip = db_blocks.tip()?.unwrap();
+    let block2_tip = slp_indexer.blocks()?.tip()?.unwrap();
     assert_eq!(block2_tip.hash, block2.header.calc_hash());
     assert_eq!(block2_tip.prev_hash, block1_tip.hash);
     check_tx_indexed(
@@ -241,9 +269,14 @@ fn test_reorg_empty(slp_indexer: &SlpIndexer, bitcoind: &BitcoinCli) -> Result<(
         1188,
         180,
     )?;
-    check_pages(r, PayloadPrefix::P2SH, anyone_payload, [&[(1, 1), (2, 1)]])?;
+    check_pages(
+        &slp_indexer.outputs()?,
+        PayloadPrefix::P2SH,
+        anyone_payload,
+        [&[(1, 1), (2, 1)]],
+    )?;
     check_utxos(
-        db_utxos,
+        &slp_indexer.utxos()?,
         PayloadPrefix::P2SH,
         anyone_payload,
         [(1, 1), (2, 1)],
