@@ -58,10 +58,7 @@ fn main() -> Result<()> {
                 value,
             })
             .collect::<Vec<_>>();
-        let spent_scripts = outputs
-            .iter()
-            .map(|output| output.script.clone())
-            .collect::<Vec<_>>();
+        let spent_scripts = vec![anyone_script.to_p2sh()];
         let tx = build_tx(prev_out, &anyone_script, outputs);
         let tx = tx.hashed();
         for (out_idx, script) in scripts.into_iter().enumerate() {
@@ -96,6 +93,7 @@ fn main() -> Result<()> {
             let num_outputs = rng.gen_range(2..8);
             let mut inputs = Vec::new();
             let mut input_sum = 0;
+            let mut spent_scripts = Vec::with_capacity(num_inputs);
             for _ in 0..num_inputs {
                 let (prev_out, script, value) = utxos.remove(rng.gen_range(0..utxos.len()));
                 inputs.push(TxInput {
@@ -104,6 +102,7 @@ fn main() -> Result<()> {
                     sequence: SequenceNo::finalized(),
                     ..Default::default()
                 });
+                spent_scripts.push(script.to_p2sh());
                 input_sum += value;
             }
             let output_value = (input_sum - 10_000) / num_outputs;
@@ -124,10 +123,6 @@ fn main() -> Result<()> {
                     value: output_value,
                 })
                 .collect::<Vec<_>>();
-            let spent_scripts = outputs
-                .iter()
-                .map(|output| output.script.clone())
-                .collect::<Vec<_>>();
             let tx = UnhashedTx {
                 version: 1,
                 inputs,
@@ -145,9 +140,15 @@ fn main() -> Result<()> {
                     output_value,
                 ));
             }
+            let txid = tx.hash().clone();
             txs.push(tx);
-            block_spent_outputs.push(spent_scripts);
+            block_spent_outputs.push((txid, spent_scripts));
         }
+        block_spent_outputs.sort_unstable_by_key(|(txid, _)| txid.clone());
+        let block_spent_outputs = block_spent_outputs
+            .into_iter()
+            .map(|(_, script)| script)
+            .collect();
         let coinbase = build_bitcoin_coinbase(blocks.len() as i32, anyone_script.to_p2sh());
         let coinbase = coinbase.hashed();
         let block = build_bitcoin_block(prev_block_hash, timestamp, coinbase, txs);
