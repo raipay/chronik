@@ -6,7 +6,7 @@ use bitcoinsuite_core::{
 };
 use bitcoinsuite_error::Result;
 use bitcoinsuite_test_utils_blockchain::build_tx;
-use rand::{Rng, SeedableRng};
+use rand::{distributions::WeightedIndex, prelude::Distribution, Rng, SeedableRng};
 use chronik_rocksdb::{Block, BlockTxs, Db, IndexDb, TxEntry};
 use tempdir::TempDir;
 
@@ -80,6 +80,12 @@ fn main() -> Result<()> {
     }
 
     println!("generating {} blocks...", num_blocks);
+    let script_counter_weights = &[
+        // somewhat realistic script distribution
+        // last "1000" means unique address
+        1000, 200, 50, 10, 5, 4, 3, 2, 1, 1000,
+    ];
+    let script_counter_dist = WeightedIndex::new(script_counter_weights).unwrap();
     let mut rng = rand::rngs::StdRng::from_seed([42; 32]);
     for i in 0..num_blocks {
         if i % 10 == 0 {
@@ -113,7 +119,12 @@ fn main() -> Result<()> {
                 .into_iter()
                 .map(|_| {
                     counter += 1;
-                    script_from_counter(counter)
+                    let script_idx = script_counter_dist.sample(&mut rng);
+                    if script_idx == script_counter_weights.len() - 1 {
+                        script_from_counter(counter)
+                    } else {
+                        script_from_counter(script_idx as u32 + 100)
+                    }
                 })
                 .collect::<Vec<_>>();
             let outputs = scripts
