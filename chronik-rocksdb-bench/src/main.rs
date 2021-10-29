@@ -207,7 +207,7 @@ fn main() -> Result<()> {
             &db_block,
             &block_txs,
             &txs,
-            block_spent_scripts.iter(),
+            |tx_pos, input_idx| &block_spent_scripts[tx_pos][input_idx],
             &mut cache,
         )?;
     }

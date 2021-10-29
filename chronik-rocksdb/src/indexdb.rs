@@ -73,7 +73,7 @@ impl IndexDb {
         block: &Block,
         block_txs: &'b BlockTxs,
         txs: &[UnhashedTx],
-        block_spent_scripts: impl IntoIterator<Item = impl IntoIterator<Item = &'b Script>>,
+        block_spent_script_fn: impl Fn(/*tx_num:*/ usize, /*out_idx:*/ usize) -> &'b Script,
         cache: &mut IndexCache,
     ) -> Result<()> {
         let mut timings = self.timings.write().unwrap();
@@ -110,7 +110,7 @@ impl IndexDb {
             first_tx_num,
             block_txids.clone(),
             txs,
-            block_spent_scripts,
+            block_spent_script_fn,
         )?;
         timings.timings.stop_timer("utxos");
         timings.utxos_timings.add(&utxos_timings);
@@ -132,7 +132,7 @@ impl IndexDb {
         height: i32,
         block_txids: impl IntoIterator<Item = &'b Sha256d> + Clone,
         txs: &[UnhashedTx],
-        block_spent_scripts: impl IntoIterator<Item = impl IntoIterator<Item = &'b Script>>,
+        block_spent_script_fn: impl Fn(/*tx_num:*/ usize, /*out_idx:*/ usize) -> &'b Script,
         cache: &mut IndexCache,
     ) -> Result<()> {
         let block_writer = BlockWriter::new(&self.db)?;
@@ -156,7 +156,7 @@ impl IndexDb {
             first_tx_num,
             block_txids.clone(),
             txs,
-            block_spent_scripts,
+            block_spent_script_fn,
         )?;
         spends_writer.delete_block_txs(&mut batch, first_tx_num, block_txids, txs)?;
         self.db.write_batch(batch)?;

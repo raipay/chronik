@@ -54,7 +54,7 @@ impl<'a> UtxosWriter<'a> {
         first_tx_num: u64,
         block_txids: impl IntoIterator<Item = &'b Sha256d>,
         txs: &[UnhashedTx],
-        block_spent_scripts: impl IntoIterator<Item = impl IntoIterator<Item = &'b Script>>,
+        block_spent_script_fn: impl Fn(/*tx_num:*/ usize, /*out_idx:*/ usize) -> &'b Script,
     ) -> Result<Timings> {
         let mut tx_num = first_tx_num;
         let mut new_tx_nums = HashMap::new();
@@ -87,8 +87,9 @@ impl<'a> UtxosWriter<'a> {
         timings.stop_timer("insert");
         timings.start_timer();
         let tx_reader = TxReader::new(self.db)?;
-        for (tx, spent_scripts) in txs.iter().skip(1).zip(block_spent_scripts) {
-            for (input, spent_script) in tx.inputs.iter().zip(spent_scripts) {
+        for (tx_pos, tx) in txs.iter().skip(1).enumerate() {
+            for (input_idx, input) in tx.inputs.iter().enumerate() {
+                let spent_script = block_spent_script_fn(tx_pos, input_idx);
                 let spent_tx_num = match new_tx_nums.get(&input.prev_out.txid) {
                     Some(&tx_num) => tx_num,
                     None => tx_reader
@@ -133,7 +134,7 @@ impl<'a> UtxosWriter<'a> {
         first_tx_num: u64,
         block_txids: impl IntoIterator<Item = &'b Sha256d>,
         txs: &[UnhashedTx],
-        block_spent_scripts: impl IntoIterator<Item = impl IntoIterator<Item = &'b Script>>,
+        block_spent_script_fn: impl Fn(/*tx_num:*/ usize, /*out_idx:*/ usize) -> &'b Script,
     ) -> Result<()> {
         let mut new_tx_nums = HashMap::new();
         for (tx_idx, txid) in block_txids.into_iter().enumerate() {
@@ -141,8 +142,9 @@ impl<'a> UtxosWriter<'a> {
         }
         let tx_reader = TxReader::new(self.db)?;
         let mut new_utxos = HashMap::<Vec<u8>, Vec<OutpointData>>::new();
-        for (tx, spent_scripts) in txs.iter().skip(1).zip(block_spent_scripts) {
-            for (input, spent_script) in tx.inputs.iter().zip(spent_scripts) {
+        for (tx_pos, tx) in txs.iter().skip(1).enumerate() {
+            for (input_idx, input) in tx.inputs.iter().enumerate() {
+                let spent_script = block_spent_script_fn(tx_pos, input_idx);
                 let spent_tx_num = match new_tx_nums.get(&input.prev_out.txid) {
                     Some(&tx_num) => tx_num,
                     None => tx_reader
@@ -354,11 +356,6 @@ mod test {
                 block_txs,
             ));
         }
-        fn iter_scripts<'b>(
-            scripts: &'b [Vec<&'b Script>],
-        ) -> impl IntoIterator<Item = impl IntoIterator<Item = &'b Script>> {
-            scripts.iter().map(|scripts| scripts.iter().copied())
-        }
         let connect_block = |block_height: usize| -> Result<()> {
             let mut batch = WriteBatch::default();
             utxo_writer.insert_block_txs(
@@ -366,7 +363,7 @@ mod test {
                 blocks[block_height].0,
                 &blocks[block_height].1,
                 &blocks[block_height].2,
-                iter_scripts(&blocks[block_height].3),
+                |tx_pos, input_idx| blocks[block_height].3[tx_pos][input_idx],
             )?;
             tx_writer.insert_block_txs(
                 &mut batch,
@@ -385,7 +382,7 @@ mod test {
                 blocks[block_height].0,
                 &blocks[block_height].1,
                 &blocks[block_height].2,
-                iter_scripts(&blocks[block_height].3),
+                |tx_pos, input_idx| blocks[block_height].3[tx_pos][input_idx],
             )?;
             tx_writer.delete_block_txs(&mut batch, block_height as i32)?;
             db.write_batch(batch)?;

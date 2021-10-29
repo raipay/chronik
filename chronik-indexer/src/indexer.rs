@@ -219,17 +219,15 @@ impl SlpIndexer {
             txs: db_txs,
             block_height: next_height,
         };
-        let block_spent_outputs = block.txs.iter().filter_map(|tx| {
-            tx.tx
-                .spent_coins
-                .as_ref()
-                .map(|outputs| outputs.iter().map(|output| &output.tx_output.script))
-        });
         self.db.insert_block(
             &db_block,
             &db_block_txs,
             &txs,
-            block_spent_outputs,
+            |tx_pos, input_idx| {
+                &block.txs[tx_pos + 1].tx.spent_coins.as_ref().unwrap()[input_idx]
+                    .tx_output
+                    .script
+            },
             &mut self.cache,
         )?;
         println!(
@@ -247,18 +245,16 @@ impl SlpIndexer {
         let txs = Self::_block_txs(&block)?;
         let tip = tip.unwrap();
         let block_txids = block.txs.iter().map(|tx| &tx.tx.txid);
-        let block_spent_outputs = block.txs.iter().filter_map(|tx| {
-            tx.tx
-                .spent_coins
-                .as_ref()
-                .map(|outputs| outputs.iter().map(|output| &output.tx_output.script))
-        });
         self.db.delete_block(
             &block.header.hash,
             tip.height,
             block_txids,
             &txs,
-            block_spent_outputs,
+            |tx_pos, input_idx| {
+                &block.txs[tx_pos + 1].tx.spent_coins.as_ref().unwrap()[input_idx]
+                    .tx_output
+                    .script
+            },
             &mut self.cache,
         )?;
         println!(
