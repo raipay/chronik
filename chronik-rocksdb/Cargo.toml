@@ -14,6 +14,7 @@ byteorder = "1.4"
 
 # Bitcoin stuff
 bitcoinsuite-core = { path = "../../bitcoinsuite/bitcoinsuite-core" }
+bitcoinsuite-slp = { path = "../../bitcoinsuite/bitcoinsuite-slp" }
 
 # Error handling
 thiserror = "1.0"
