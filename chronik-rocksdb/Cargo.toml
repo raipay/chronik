@@ -25,6 +25,7 @@ seahash = "4.1"
 hex = "0.4"
 
 lru = "0.7"
+rayon = "1.5"
 
 [dev-dependencies]
 tempdir = "0.3"

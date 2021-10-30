@@ -2,6 +2,9 @@ use std::collections::{hash_map::Entry, HashMap};
 
 use bitcoinsuite_core::{OutPoint, Script, Sha256d, UnhashedTx};
 use bitcoinsuite_error::{ErrorMeta, Result};
+use rayon::iter::{
+    IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
+};
 use rocksdb::{ColumnFamilyDescriptor, Options, WriteBatch};
 use thiserror::Error;
 use zerocopy::{AsBytes, U32};
@@ -63,66 +66,117 @@ impl<'a> UtxosWriter<'a> {
         let mut tx_num = first_tx_num;
         let mut new_tx_nums = HashMap::new();
         let mut timings = Timings::default();
-        let mut new_utxos = HashMap::<Vec<u8>, Vec<OutpointData>>::new();
+        timings.start_timer();
+        // All new outpoints (tx_num, out_idx) from outputs by script
+        let mut output_outpoints = HashMap::new();
         for (tx, txid) in txs.iter().zip(block_txids) {
             new_tx_nums.insert(txid, tx_num);
             for (out_idx, output) in tx.outputs.iter().enumerate() {
                 for (payload_prefix, mut script_payload) in script_payloads(&output.script) {
                     script_payload.insert(0, payload_prefix as u8);
-                    update_map_or_db_entry(
-                        self.db,
-                        self.cf_utxos(),
-                        &mut new_utxos,
-                        script_payload,
-                        |outpoints| {
-                            let script_entry = OutpointData {
-                                tx_num: TxNum(tx_num.into()),
-                                out_idx: U32::new(out_idx as u32),
-                            };
-                            if let Err(idx) = outpoints.binary_search(&script_entry) {
-                                outpoints.insert(idx, script_entry);
-                            }
-                        },
-                    )?;
+                    let outpoints = output_outpoints.entry(script_payload).or_insert(vec![]);
+                    outpoints.push((tx_num, out_idx as u32));
                 }
             }
             tx_num += 1;
         }
+        timings.stop_timer("prepare_insert");
+        timings.start_timer();
+        // Updated UTXOs by script, with new outpoints inserted
+        let new_insert_utxos = output_outpoints
+            .into_par_iter()
+            .map(|(script_payload, outpoints)| {
+                let value = self.db.get(self.cf_utxos(), &script_payload)?;
+                let mut db_outpoints = match &value {
+                    Some(value) => interpret_slice::<OutpointData>(value)?.to_vec(),
+                    None => vec![],
+                };
+                for (tx_num, out_idx) in outpoints {
+                    let script_entry = OutpointData {
+                        tx_num: TxNum(tx_num.into()),
+                        out_idx: U32::new(out_idx),
+                    };
+                    if let Err(idx) = db_outpoints.binary_search(&script_entry) {
+                        db_outpoints.insert(idx, script_entry);
+                    }
+                }
+                Ok((script_payload, db_outpoints))
+            })
+            .collect::<Result<HashMap<_, _>>>()?;
         timings.stop_timer("insert");
         timings.start_timer();
         let tx_reader = TxReader::new(self.db)?;
-        for (tx_pos, tx) in txs.iter().skip(1).enumerate() {
-            for (input_idx, input) in tx.inputs.iter().enumerate() {
+        // tx_nums for each spent input
+        let input_tx_nums = txs
+            .par_iter()
+            .skip(1)
+            .map(|tx| {
+                tx.inputs
+                    .iter()
+                    .map(|input| {
+                        Ok(match new_tx_nums.get(&input.prev_out.txid) {
+                            Some(&tx_num) => tx_num,
+                            None => tx_reader
+                                .tx_num_by_txid(&input.prev_out.txid)?
+                                .ok_or_else(|| UnknownInputSpent(input.prev_out.clone()))?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+            .collect::<Result<Vec<_>>>()?;
+        // All destroyed outpoints (tx_num, out_idx) by script
+        let mut input_outpoints = HashMap::new();
+        for (tx_pos, (tx, input_tx_nums)) in txs.iter().skip(1).zip(input_tx_nums).enumerate() {
+            for (input_idx, (input, spent_tx_num)) in
+                tx.inputs.iter().zip(input_tx_nums).enumerate()
+            {
                 let spent_script = block_spent_script_fn(tx_pos, input_idx);
-                let spent_tx_num = match new_tx_nums.get(&input.prev_out.txid) {
-                    Some(&tx_num) => tx_num,
-                    None => tx_reader
-                        .tx_num_by_txid(&input.prev_out.txid)?
-                        .ok_or_else(|| UnknownInputSpent(input.prev_out.clone()))?,
-                };
                 for (payload_prefix, mut script_payload) in script_payloads(spent_script) {
                     script_payload.insert(0, payload_prefix as u8);
-                    update_map_or_db_entry(
-                        self.db,
-                        self.cf_utxos(),
-                        &mut new_utxos,
-                        script_payload,
-                        |outpoints| {
-                            let script_entry = OutpointData {
-                                tx_num: TxNum(spent_tx_num.into()),
-                                out_idx: U32::new(input.prev_out.out_idx),
-                            };
-                            if let Ok(idx) = outpoints.binary_search(&script_entry) {
-                                outpoints.remove(idx);
-                            }
-                        },
-                    )?;
+                    let outpoints = input_outpoints.entry(script_payload).or_insert(vec![]);
+                    outpoints.push((spent_tx_num, input.prev_out.out_idx));
                 }
             }
         }
+        timings.stop_timer("prepare_delete");
+        timings.start_timer();
+        // Updated UTXOs by script, with destroyed outpoints deleted.
+        // Overrides entries which are also present in new_insert_utxos.
+        let new_delete_utxos = input_outpoints
+            .into_par_iter()
+            .map(|(script_payload, spent_outpoints)| {
+                let mut outpoints = match new_insert_utxos.get(&script_payload) {
+                    Some(outpoints) => outpoints.clone(),
+                    None => match self.db.get(self.cf_utxos(), &script_payload)? {
+                        Some(value) => interpret_slice::<OutpointData>(&value)?.to_vec(),
+                        None => vec![],
+                    },
+                };
+                for (tx_num, out_idx) in spent_outpoints {
+                    let script_entry = OutpointData {
+                        tx_num: TxNum(tx_num.into()),
+                        out_idx: U32::new(out_idx),
+                    };
+                    if let Ok(idx) = outpoints.binary_search(&script_entry) {
+                        outpoints.remove(idx);
+                    }
+                }
+                Ok((script_payload, outpoints))
+            })
+            .collect::<Result<HashMap<_, _>>>()?;
         timings.stop_timer("delete");
         timings.start_timer();
-        for (key, value) in new_utxos {
+        for (key, value) in &new_delete_utxos {
+            match value.is_empty() {
+                true => batch.delete_cf(self.cf_utxos(), key),
+                false => batch.put_cf(self.cf_utxos(), key, value.as_bytes()),
+            }
+        }
+        for (key, value) in new_insert_utxos {
+            if new_delete_utxos.contains_key(&key) {
+                // new_delete_utxos overrides new_insert_utxos, so no update
+                continue;
+            }
             match value.is_empty() {
                 true => batch.delete_cf(self.cf_utxos(), key),
                 false => batch.put_cf(self.cf_utxos(), key, value.as_bytes()),
