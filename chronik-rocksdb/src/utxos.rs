@@ -58,7 +58,7 @@ impl<'a> UtxosWriter<'a> {
     pub fn insert_block_txs<'b>(
         &self,
         batch: &mut WriteBatch,
-        first_tx_num: u64,
+        first_tx_num: TxNum,
         block_txids: impl IntoIterator<Item = &'b Sha256d>,
         txs: &[UnhashedTx],
         block_spent_script_fn: impl Fn(/*tx_num:*/ usize, /*out_idx:*/ usize) -> &'b Script,
@@ -93,7 +93,7 @@ impl<'a> UtxosWriter<'a> {
                 };
                 for (tx_num, out_idx) in outpoints {
                     let script_entry = OutpointData {
-                        tx_num: TxNum(tx_num.into()),
+                        tx_num: tx_num.into(),
                         out_idx: U32::new(out_idx),
                     };
                     if let Err(idx) = db_outpoints.binary_search(&script_entry) {
@@ -154,7 +154,7 @@ impl<'a> UtxosWriter<'a> {
                 };
                 for (tx_num, out_idx) in spent_outpoints {
                     let script_entry = OutpointData {
-                        tx_num: TxNum(tx_num.into()),
+                        tx_num: tx_num.into(),
                         out_idx: U32::new(out_idx),
                     };
                     if let Ok(idx) = outpoints.binary_search(&script_entry) {
@@ -189,14 +189,14 @@ impl<'a> UtxosWriter<'a> {
     pub fn delete_block_txs<'b>(
         &self,
         batch: &mut WriteBatch,
-        first_tx_num: u64,
+        first_tx_num: TxNum,
         block_txids: impl IntoIterator<Item = &'b Sha256d>,
         txs: &[UnhashedTx],
         block_spent_script_fn: impl Fn(/*tx_num:*/ usize, /*out_idx:*/ usize) -> &'b Script,
     ) -> Result<()> {
         let mut new_tx_nums = HashMap::new();
         for (tx_idx, txid) in block_txids.into_iter().enumerate() {
-            new_tx_nums.insert(txid, first_tx_num + tx_idx as u64);
+            new_tx_nums.insert(txid, first_tx_num + tx_idx as TxNum);
         }
         let tx_reader = TxReader::new(self.db)?;
         let mut new_utxos = HashMap::<Vec<u8>, Vec<OutpointData>>::new();
@@ -218,7 +218,7 @@ impl<'a> UtxosWriter<'a> {
                         script_payload,
                         |outpoints| {
                             let script_entry = OutpointData {
-                                tx_num: TxNum(spent_tx_num.into()),
+                                tx_num: spent_tx_num.into(),
                                 out_idx: U32::new(input.prev_out.out_idx),
                             };
                             if let Err(idx) = outpoints.binary_search(&script_entry) {
@@ -241,7 +241,7 @@ impl<'a> UtxosWriter<'a> {
                         script_payload,
                         |outpoints| {
                             let script_entry = OutpointData {
-                                tx_num: TxNum(tx_num.into()),
+                                tx_num: tx_num.into(),
                                 out_idx: U32::new(out_idx as u32),
                             };
                             if let Ok(idx) = outpoints.binary_search(&script_entry) {
@@ -282,7 +282,7 @@ impl<'a> UtxosReader<'a> {
         let entries = interpret_slice::<OutpointData>(&value)?
             .iter()
             .map(|entry| OutpointEntry {
-                tx_num: entry.tx_num.0.get(),
+                tx_num: entry.tx_num.get(),
                 out_idx: entry.out_idx.get(),
             })
             .collect();
@@ -315,8 +315,8 @@ fn update_map_or_db_entry<'a>(
 #[cfg(test)]
 mod test {
     use crate::{
-        outpoint_data::OutpointData, BlockTxs, Db, OutpointEntry, PayloadPrefix, TxEntry, TxNum,
-        TxWriter, UtxosReader, UtxosWriter,
+        outpoint_data::OutpointData, BlockHeight, BlockTxs, Db, OutpointEntry, PayloadPrefix,
+        TxEntry, TxNum, TxWriter, UtxosReader, UtxosWriter,
     };
     use bitcoinsuite_core::{
         ecc::PubKey, OutPoint, Script, Sha256d, ShaRmd160, TxInput, TxOutput, UnhashedTx,
@@ -359,7 +359,7 @@ mod test {
         ];
         let txs_blocks = &[txs_block1, txs_block2, txs_block3];
         let mut blocks = Vec::new();
-        let mut num_txs = 0u64;
+        let mut num_txs: TxNum = 0;
         for &txs_block in txs_blocks {
             let mut block_txids = Vec::new();
             let mut block_txs = Vec::new();
@@ -431,7 +431,7 @@ mod test {
                 &mut batch,
                 &BlockTxs {
                     txs: blocks[block_height].4.clone(),
-                    block_height: block_height as i32,
+                    block_height: block_height as BlockHeight,
                 },
             )?;
             db.write_batch(batch)?;
@@ -446,7 +446,7 @@ mod test {
                 &blocks[block_height].2,
                 |tx_pos, input_idx| blocks[block_height].3[tx_pos][input_idx],
             )?;
-            tx_writer.delete_block_txs(&mut batch, block_height as i32)?;
+            tx_writer.delete_block_txs(&mut batch, block_height as BlockHeight)?;
             db.write_batch(batch)?;
             Ok(())
         };
@@ -535,7 +535,7 @@ mod test {
         utxo_reader: &UtxosReader,
         prefix: PayloadPrefix,
         payload_body: &[u8],
-        expected_txs: [(u64, u32); N],
+        expected_txs: [(TxNum, u32); N],
     ) -> Result<()> {
         assert_eq!(
             utxo_reader.utxos(prefix, payload_body)?,
@@ -555,7 +555,7 @@ mod test {
         let entry_data = expected_txs
             .into_iter()
             .map(|(tx_num, out_idx)| OutpointData {
-                tx_num: TxNum(tx_num.into()),
+                tx_num: tx_num.into(),
                 out_idx: out_idx.into(),
             })
             .collect::<Vec<_>>();

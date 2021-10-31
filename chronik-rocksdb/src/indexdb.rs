@@ -6,9 +6,9 @@ use rocksdb::WriteBatch;
 use thiserror::Error;
 
 use crate::{
-    Block, BlockReader, BlockTxs, BlockWriter, Db, OutputsConf, OutputsReader, OutputsWriter,
-    OutputsWriterCache, SpendsReader, SpendsWriter, Timings, TxReader, TxWriter, UtxosReader,
-    UtxosWriter,
+    Block, BlockHeight, BlockReader, BlockTxs, BlockWriter, Db, OutputsConf, OutputsReader,
+    OutputsWriter, OutputsWriterCache, SpendsReader, SpendsWriter, Timings, TxReader, TxWriter,
+    UtxosReader, UtxosWriter,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
@@ -129,7 +129,7 @@ impl IndexDb {
     pub fn delete_block<'b>(
         &self,
         block_hash: &Sha256d,
-        height: i32,
+        height: BlockHeight,
         block_txids: impl IntoIterator<Item = &'b Sha256d> + Clone,
         txs: &[UnhashedTx],
         block_spent_script_fn: impl Fn(/*tx_num:*/ usize, /*out_idx:*/ usize) -> &'b Script,

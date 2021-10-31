@@ -65,7 +65,7 @@ impl<'a> OutputsWriter<'a> {
     pub fn insert_block_txs(
         &self,
         batch: &mut WriteBatch,
-        first_tx_num: u64,
+        first_tx_num: TxNum,
         txs: &[UnhashedTx],
         outputs_cache: &mut OutputsWriterCache,
     ) -> Result<Timings> {
@@ -95,7 +95,7 @@ impl<'a> OutputsWriter<'a> {
                     let page_num = num_txs / self.conf.page_size as u32;
                     let key = key_for_script_payload(&script_payload, page_num);
                     let script_entry = OutpointData {
-                        tx_num: TxNum(tx_num.into()),
+                        tx_num: tx_num.into(),
                         out_idx: U32::new(out_idx as u32),
                     };
                     let mut value = script_entry.as_bytes().to_vec();
@@ -118,13 +118,13 @@ impl<'a> OutputsWriter<'a> {
     pub fn delete_block_txs(
         &self,
         batch: &mut WriteBatch,
-        first_tx_num: u64,
+        first_tx_num: TxNum,
         txs: &[UnhashedTx],
         outputs_cache: &mut OutputsWriterCache,
     ) -> Result<()> {
         let mut num_outputs_by_payload = HashMap::new();
         for (tx_idx, tx) in txs.iter().enumerate().rev() {
-            let tx_num = first_tx_num + tx_idx as u64;
+            let tx_num = first_tx_num + tx_idx as TxNum;
             for (out_idx, output) in tx.outputs.iter().enumerate().rev() {
                 for (payload_prefix, mut script_payload) in script_payloads(&output.script) {
                     script_payload.insert(0, payload_prefix as u8);
@@ -143,7 +143,7 @@ impl<'a> OutputsWriter<'a> {
                     let page_num = output_idx / self.conf.page_size as u32;
                     let key = key_for_script_payload(&script_payload, page_num);
                     let script_entry = OutpointData {
-                        tx_num: TxNum(tx_num.into()),
+                        tx_num: tx_num.into(),
                         out_idx: U32::new(out_idx as u32),
                     };
                     let mut value = script_entry.as_bytes().to_vec();
@@ -202,7 +202,7 @@ impl<'a> OutputsReader<'a> {
         let entries = interpret_slice::<OutpointData>(&value)?
             .iter()
             .map(|entry| OutpointEntry {
-                tx_num: entry.tx_num.0.get(),
+                tx_num: entry.tx_num.get(),
                 out_idx: entry.out_idx.get(),
             })
             .collect();
@@ -335,7 +335,7 @@ mod test {
                     lock_time: 0,
                 })
                 .collect::<Vec<_>>();
-            blocks.push((num_txs as u64, txs));
+            blocks.push((num_txs as TxNum, txs));
             num_txs += tx_scripts.len();
         }
         {
@@ -440,7 +440,7 @@ mod test {
         outputs_reader: &OutputsReader,
         prefix: PayloadPrefix,
         payload_body: &[u8],
-        expected_txs: [&[(u64, u32)]; N],
+        expected_txs: [&[(TxNum, u32)]; N],
     ) -> Result<()> {
         assert_eq!(
             outputs_reader.num_pages_by_payload(prefix, payload_body)?,
@@ -464,7 +464,7 @@ mod test {
                 .iter()
                 .cloned()
                 .map(|(tx_num, out_idx)| OutpointData {
-                    tx_num: TxNum(tx_num.into()),
+                    tx_num: tx_num.into(),
                     out_idx: out_idx.into(),
                 })
                 .collect::<Vec<_>>();

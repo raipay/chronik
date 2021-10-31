@@ -3,24 +3,24 @@ use std::cmp::Ordering;
 use byteorder::BE;
 use zerocopy::{AsBytes, FromBytes, Unaligned, U32};
 
-use crate::TxNum;
+use crate::{TxNum, TxNumZC};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OutpointEntry {
-    pub tx_num: u64,
+    pub tx_num: TxNum,
     pub out_idx: u32,
 }
 
 #[derive(Debug, Clone, FromBytes, AsBytes, Unaligned, PartialEq, Eq)]
 #[repr(C)]
 pub struct OutpointData {
-    pub tx_num: TxNum,
+    pub tx_num: TxNumZC,
     pub out_idx: U32<BE>,
 }
 
 impl Ord for OutpointData {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        match self.tx_num.0.get().cmp(&other.tx_num.0.get()) {
+        match self.tx_num.get().cmp(&other.tx_num.get()) {
             Ordering::Equal => self.out_idx.get().cmp(&other.out_idx.get()),
             ordering => ordering,
         }

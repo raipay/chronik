@@ -16,8 +16,13 @@ use crate::{
 pub const CF_BLOCKS: &str = "blocks";
 pub const CF_BLOCKS_INDEX_BY_HASH: &str = "blocks_index_by_hash";
 
+pub type BlockHeight = i32;
 // big endian so blocks are sorted ascendingly
-pub type BlockHeightInner = I32<BE>;
+pub type BlockHeightZC = I32<BE>;
+
+#[derive(Debug, Copy, Clone, FromBytes, AsBytes, Unaligned, PartialEq, Eq)]
+#[repr(C)]
+pub struct BlockHeightOrd(BlockHeightZC);
 
 pub struct BlockWriter<'a> {
     db: &'a Db,
@@ -31,15 +36,11 @@ pub struct BlockReader<'a> {
     index: Index<BlockIndexable>,
 }
 
-#[derive(Debug, Copy, Clone, FromBytes, AsBytes, Unaligned, PartialEq, Eq)]
-#[repr(C)]
-pub struct BlockHeight(BlockHeightInner);
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Block {
     pub hash: Sha256d,
     pub prev_hash: Sha256d,
-    pub height: i32,
+    pub height: BlockHeight,
     pub n_bits: u32,
     pub timestamp: i64,
     pub file_num: u32,
@@ -60,7 +61,7 @@ struct BlockIndexable;
 pub enum BlocksError {
     #[critical()]
     #[error("Orphan block")]
-    OrphanBlock(i32),
+    OrphanBlock(BlockHeight),
 }
 
 use self::BlocksError::*;
@@ -84,21 +85,21 @@ impl<'a> BlockWriter<'a> {
             timestamp: I64::new(block.timestamp),
             file_num: U32::new(block.file_num),
         };
-        let block_height = BlockHeight(BlockHeightInner::new(block.height));
+        let block_height = BlockHeightOrd(block.height.into());
         batch.put_cf(self.cf, block_height.as_bytes(), block_data.as_bytes());
         self.index
             .insert(self.db, batch, &block_height, &block_data)?;
         Ok(())
     }
 
-    pub fn delete_by_height(&self, batch: &mut WriteBatch, height: i32) -> Result<()> {
-        let height = BlockHeight(BlockHeightInner::new(height));
+    pub fn delete_by_height(&self, batch: &mut WriteBatch, height: BlockHeight) -> Result<()> {
+        let height = BlockHeightZC::new(height);
         let block_data = self.db.get(self.cf, height.as_bytes())?;
         let block_data = match &block_data {
             Some(block_data) => interpret::<BlockData>(block_data)?,
             None => return Ok(()),
         };
-        self.delete_by_height_and_hash(batch, height.0.get(), &Sha256d::new(block_data.hash))?;
+        self.delete_by_height_and_hash(batch, height.get(), &Sha256d::new(block_data.hash))?;
         Ok(())
     }
 
@@ -117,10 +118,10 @@ impl<'a> BlockWriter<'a> {
     pub fn delete_by_height_and_hash(
         &self,
         batch: &mut WriteBatch,
-        height: i32,
+        height: BlockHeight,
         block_hash: &Sha256d,
     ) -> Result<()> {
-        let height = BlockHeight(BlockHeightInner::new(height));
+        let height = BlockHeightOrd(height.into());
         batch.delete_cf(self.cf, height.as_bytes());
         self.index
             .delete(self.db, batch, &height, block_hash.byte_array().as_array())?;
@@ -136,10 +137,10 @@ impl<'a> BlockReader<'a> {
     }
 
     /// The height of the most-work fully-validated chain. The genesis block has height 0
-    pub fn height(&self) -> Result<i32> {
+    pub fn height(&self) -> Result<BlockHeight> {
         let mut iter = self.db.rocks().iterator_cf(self.cf, IteratorMode::End);
         match iter.next() {
-            Some((height_bytes, _)) => Ok(interpret::<BlockHeightInner>(&height_bytes)?.get()),
+            Some((height_bytes, _)) => Ok(interpret::<BlockHeightZC>(&height_bytes)?.get()),
             None => Ok(-1),
         }
     }
@@ -148,7 +149,7 @@ impl<'a> BlockReader<'a> {
         let mut iter = self.db.rocks().iterator_cf(self.cf, IteratorMode::End);
         match iter.next() {
             Some((height_bytes, block_data)) => {
-                let height = interpret::<BlockHeightInner>(&height_bytes)?.get();
+                let height = interpret::<BlockHeightZC>(&height_bytes)?.get();
                 let block_data = interpret::<BlockData>(&block_data)?;
                 let prev_block_hash = self.get_prev_hash(height)?;
                 Ok(Some(Block {
@@ -164,10 +165,10 @@ impl<'a> BlockReader<'a> {
         }
     }
 
-    pub fn by_height(&self, height: i32) -> Result<Option<Block>> {
+    pub fn by_height(&self, height: BlockHeight) -> Result<Option<Block>> {
         let block_data = self
             .db
-            .get(self.cf, BlockHeightInner::new(height).as_bytes())?;
+            .get(self.cf, BlockHeightZC::new(height).as_bytes())?;
         let block_data = match &block_data {
             Some(block_data) => interpret::<BlockData>(block_data)?,
             None => return Ok(None),
@@ -203,13 +204,13 @@ impl<'a> BlockReader<'a> {
         }))
     }
 
-    fn get_prev_hash(&self, height: i32) -> Result<[u8; 32]> {
+    fn get_prev_hash(&self, height: BlockHeight) -> Result<[u8; 32]> {
         if height == 0 {
             return Ok([0; 32]);
         }
         let prev_block_data = self
             .db
-            .get(self.cf, BlockHeightInner::new(height - 1).as_bytes())?
+            .get(self.cf, BlockHeightZC::new(height - 1).as_bytes())?
             .ok_or(OrphanBlock(height))?;
         let prev_block = interpret::<BlockData>(&prev_block_data)?;
         Ok(prev_block.hash)
@@ -222,7 +223,7 @@ fn block_index() -> Index<BlockIndexable> {
 
 impl Indexable for BlockIndexable {
     type Hash = U32<LE>;
-    type Serial = BlockHeight;
+    type Serial = BlockHeightOrd;
     type Key = [u8; 32];
     type Value = BlockData;
 
@@ -235,13 +236,13 @@ impl Indexable for BlockIndexable {
     }
 }
 
-impl Ord for BlockHeight {
+impl Ord for BlockHeightOrd {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.0.get().cmp(&other.0.get())
     }
 }
 
-impl PartialOrd for BlockHeight {
+impl PartialOrd for BlockHeightOrd {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }

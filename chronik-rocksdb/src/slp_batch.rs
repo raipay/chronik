@@ -7,18 +7,18 @@ use std::collections::{HashMap, HashSet};
 
 use bitcoinsuite_core::UnhashedTx;
 
-use crate::OutpointEntry;
+use crate::{OutpointEntry, TxNum};
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum BatchError {
     #[error("Batch contains txs forming a circle: {0:?}")]
-    FoundTxCircle(HashSet<u64>),
+    FoundTxCircle(HashSet<TxNum>),
 }
 
 pub struct BatchSlpTx<'a> {
     pub tx: &'a UnhashedTx,
     pub parsed_tx_data: SlpParseData,
-    pub input_tx_nums: Vec<Option<u64>>,
+    pub input_tx_nums: Vec<Option<TxNum>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,11 +27,11 @@ pub struct SlpInvalidTxData {
     pub slp_error: SlpError,
 }
 
-pub type SlpValidHashMap = HashMap<u64, SlpValidTxData>;
-pub type SlpInvalidHashMap = HashMap<u64, SlpInvalidTxData>;
+pub type SlpValidHashMap = HashMap<TxNum, SlpValidTxData>;
+pub type SlpInvalidHashMap = HashMap<TxNum, SlpInvalidTxData>;
 
 pub fn validate_slp_batch(
-    mut txs: HashMap<u64, BatchSlpTx>,
+    mut txs: HashMap<TxNum, BatchSlpTx>,
     mut known_slp_outputs: HashMap<OutpointEntry, Option<SlpSpentOutput>>,
 ) -> Result<(SlpValidHashMap, SlpInvalidHashMap), BatchError> {
     let mut valid_results = HashMap::new();

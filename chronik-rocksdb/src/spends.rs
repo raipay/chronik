@@ -12,7 +12,7 @@ use crate::{
     merge_ops::{
         full_merge_ordered_list, partial_merge_ordered_list, PREFIX_DELETE, PREFIX_INSERT,
     },
-    Db, TxNum, TxReader, CF,
+    Db, TxNum, TxNumZC, TxReader, CF,
 };
 
 pub const CF_SPENDS: &str = "spends";
@@ -26,14 +26,14 @@ tx_num -> [(out_idx, tx_num, input_idx)]
 #[repr(C)]
 struct SpendData {
     out_idx: U32<BE>,
-    tx_num: TxNum,
+    tx_num: TxNumZC,
     input_idx: U32<BE>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SpendEntry {
     pub out_idx: u32,
-    pub tx_num: u64,
+    pub tx_num: TxNum,
     pub input_idx: u32,
 }
 
@@ -75,7 +75,7 @@ impl<'a> SpendsWriter<'a> {
     pub fn insert_block_txs<'b>(
         &self,
         batch: &mut WriteBatch,
-        first_tx_num: u64,
+        first_tx_num: TxNum,
         block_txids: impl IntoIterator<Item = &'b Sha256d>,
         txs: &[UnhashedTx],
     ) -> Result<()> {
@@ -85,7 +85,7 @@ impl<'a> SpendsWriter<'a> {
     pub fn delete_block_txs<'b>(
         &self,
         batch: &mut WriteBatch,
-        first_tx_num: u64,
+        first_tx_num: TxNum,
         block_txids: impl IntoIterator<Item = &'b Sha256d>,
         txs: &[UnhashedTx],
     ) -> Result<()> {
@@ -95,18 +95,18 @@ impl<'a> SpendsWriter<'a> {
     fn update_block_txs<'b>(
         &self,
         batch: &mut WriteBatch,
-        first_tx_num: u64,
+        first_tx_num: TxNum,
         block_txids: impl IntoIterator<Item = &'b Sha256d>,
         txs: &[UnhashedTx],
         prefix: u8,
     ) -> Result<()> {
         let mut new_tx_nums = HashMap::new();
         for (tx_idx, txid) in block_txids.into_iter().enumerate() {
-            new_tx_nums.insert(txid, first_tx_num + tx_idx as u64);
+            new_tx_nums.insert(txid, first_tx_num + tx_idx as TxNum);
         }
         let tx_reader = TxReader::new(self.db)?;
         for (tx_idx, tx) in txs.iter().enumerate().skip(1) {
-            let tx_num = first_tx_num + tx_idx as u64;
+            let tx_num = first_tx_num + tx_idx as TxNum;
             for (input_idx, input) in tx.inputs.iter().enumerate() {
                 let spent_tx_num = match new_tx_nums.get(&input.prev_out.txid) {
                     Some(&tx_num) => tx_num,
@@ -116,12 +116,12 @@ impl<'a> SpendsWriter<'a> {
                 };
                 let spend = SpendData {
                     out_idx: input.prev_out.out_idx.into(),
-                    tx_num: TxNum(tx_num.into()),
+                    tx_num: tx_num.into(),
                     input_idx: (input_idx as u32).into(),
                 };
                 let mut value = spend.as_bytes().to_vec();
                 value.insert(0, prefix);
-                batch.merge_cf(self.cf_spends, TxNum(spent_tx_num.into()).as_bytes(), value);
+                batch.merge_cf(self.cf_spends, TxNumZC::new(spent_tx_num).as_bytes(), value);
             }
         }
         Ok(())
@@ -134,8 +134,8 @@ impl<'a> SpendsReader<'a> {
         Ok(SpendsReader { db, cf_spends })
     }
 
-    pub fn spends_by_tx_num(&self, tx_num: u64) -> Result<Vec<SpendEntry>> {
-        let tx_num = TxNum(tx_num.into());
+    pub fn spends_by_tx_num(&self, tx_num: TxNum) -> Result<Vec<SpendEntry>> {
+        let tx_num = TxNumZC::new(tx_num);
         let value = match self.db.get(self.cf_spends, tx_num.as_bytes())? {
             Some(value) => value,
             None => return Ok(vec![]),
@@ -144,7 +144,7 @@ impl<'a> SpendsReader<'a> {
             .iter()
             .map(|entry| SpendEntry {
                 out_idx: entry.out_idx.get(),
-                tx_num: entry.tx_num.0.get(),
+                tx_num: entry.tx_num.get(),
                 input_idx: entry.input_idx.get(),
             })
             .collect();
@@ -155,7 +155,7 @@ impl<'a> SpendsReader<'a> {
 impl Ord for SpendData {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         match self.out_idx.get().cmp(&other.out_idx.get()) {
-            Ordering::Equal => match self.tx_num.0.get().cmp(&other.tx_num.0.get()) {
+            Ordering::Equal => match self.tx_num.get().cmp(&other.tx_num.get()) {
                 Ordering::Equal => self.input_idx.get().cmp(&other.input_idx.get()),
                 ordering => ordering,
             },
@@ -173,8 +173,8 @@ impl PartialOrd for SpendData {
 #[cfg(test)]
 mod test {
     use crate::{
-        spends::SpendData, BlockTxs, Db, SpendEntry, SpendsReader, SpendsWriter, TxEntry, TxNum,
-        TxWriter,
+        spends::SpendData, BlockHeight, BlockTxs, Db, SpendEntry, SpendsReader, SpendsWriter,
+        TxEntry, TxNum, TxNumZC, TxWriter,
     };
     use bitcoinsuite_core::{OutPoint, Sha256d, TxInput, UnhashedTx};
     use bitcoinsuite_error::Result;
@@ -195,7 +195,7 @@ mod test {
         let txs_block3: &[&[_]] = &[&[], &[(3, 1), (0, 1)]];
         let txs_blocks = &[txs_block1, txs_block2, txs_block3];
         let mut blocks = Vec::new();
-        let mut num_txs = 0u64;
+        let mut num_txs: TxNum = 0;
         for &txs_block in txs_blocks {
             let mut block_txids = Vec::new();
             let mut block_txs = Vec::new();
@@ -240,7 +240,7 @@ mod test {
                 &mut batch,
                 &BlockTxs {
                     txs: blocks[block_height].3.clone(),
-                    block_height: block_height as i32,
+                    block_height: block_height as BlockHeight,
                 },
             )?;
             db.write_batch(batch)?;
@@ -254,7 +254,7 @@ mod test {
                 &blocks[block_height].1,
                 &blocks[block_height].2,
             )?;
-            tx_writer.delete_block_txs(&mut batch, block_height as i32)?;
+            tx_writer.delete_block_txs(&mut batch, block_height as BlockHeight)?;
             db.write_batch(batch)?;
             Ok(())
         };
@@ -318,8 +318,8 @@ mod test {
 
     fn check_spends<const N: usize>(
         spends_reader: &SpendsReader,
-        tx_num: u64,
-        expected_txs: [(u32, u64, u32); N],
+        tx_num: TxNum,
+        expected_txs: [(u32, TxNum, u32); N],
     ) -> Result<()> {
         assert_eq!(
             spends_reader.spends_by_tx_num(tx_num)?,
@@ -332,7 +332,7 @@ mod test {
                 })
                 .collect::<Vec<_>>(),
         );
-        let tx_num = TxNum(tx_num.into());
+        let tx_num = TxNumZC::new(tx_num);
         let value = match spends_reader
             .db
             .get(spends_reader.cf_spends, tx_num.as_bytes())?
@@ -347,7 +347,7 @@ mod test {
             .into_iter()
             .map(|(out_idx, tx_num, input_idx)| SpendData {
                 out_idx: out_idx.into(),
-                tx_num: TxNum(tx_num.into()),
+                tx_num: tx_num.into(),
                 input_idx: input_idx.into(),
             })
             .collect::<Vec<_>>();
