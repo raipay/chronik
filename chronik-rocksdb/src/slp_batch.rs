@@ -1,4 +1,6 @@
-use bitcoinsuite_slp::{validate_slp_tx, SlpBurn, SlpParseData, SlpSpentOutput, SlpTx};
+use bitcoinsuite_slp::{
+    validate_slp_tx, SlpBurn, SlpError, SlpParseData, SlpSpentOutput, SlpValidTxData,
+};
 use thiserror::Error;
 
 use std::collections::{HashMap, HashSet};
@@ -13,17 +15,27 @@ pub enum BatchError {
     FoundTxCircle(HashSet<u64>),
 }
 
-pub struct BatchSlpTx {
-    pub tx: UnhashedTx,
+pub struct BatchSlpTx<'a> {
+    pub tx: &'a UnhashedTx,
     pub parsed_tx_data: SlpParseData,
-    pub input_tx_nums: Vec<u64>,
+    pub input_tx_nums: Vec<Option<u64>>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlpInvalidTxData {
+    pub slp_burns: Vec<Option<Box<SlpBurn>>>,
+    pub slp_error: SlpError,
+}
+
+pub type SlpValidHashMap = HashMap<u64, SlpValidTxData>;
+pub type SlpInvalidHashMap = HashMap<u64, SlpInvalidTxData>;
 
 pub fn validate_slp_batch(
     mut txs: HashMap<u64, BatchSlpTx>,
     mut known_slp_outputs: HashMap<OutpointEntry, Option<SlpSpentOutput>>,
-) -> Result<HashMap<u64, SlpTx>, BatchError> {
-    let mut result = HashMap::new();
+) -> Result<(SlpValidHashMap, SlpInvalidHashMap), BatchError> {
+    let mut valid_results = HashMap::new();
+    let mut invalid_results = HashMap::new();
     let tx_nums = txs.keys().copied().collect::<HashSet<_>>();
     loop {
         let mut next_round = HashMap::new();
@@ -31,10 +43,11 @@ pub fn validate_slp_batch(
         'tx_loop: for (tx_num, batch_tx) in txs {
             // Check whether all input tokens for this tx are known
             for (input, &input_tx_num) in batch_tx.tx.inputs.iter().zip(&batch_tx.input_tx_nums) {
-                if input.prev_out.is_coinbase() {
-                    // coinbase txs cannot have token inputs
-                    continue;
-                }
+                // Input doesn't exist (e.g. coinbase), assume to be 0
+                let input_tx_num = match input_tx_num {
+                    Some(input_tx_num) => input_tx_num,
+                    None => continue,
+                };
                 let outpoint = OutpointEntry {
                     tx_num: input_tx_num,
                     out_idx: input.prev_out.out_idx,
@@ -58,7 +71,7 @@ pub fn validate_slp_batch(
                 .zip(&batch_tx.input_tx_nums)
                 .map(|(input, &input_tx_num)| {
                     let outpoint = OutpointEntry {
-                        tx_num: input_tx_num,
+                        tx_num: input_tx_num?,
                         out_idx: input.prev_out.out_idx,
                     };
                     known_slp_outputs
@@ -84,23 +97,14 @@ pub fn validate_slp_batch(
                             }),
                         );
                     }
-                    result.insert(
-                        tx_num,
-                        SlpTx::new(
-                            batch_tx.tx,
-                            Some(valid_tx_data.slp_tx_data),
-                            valid_tx_data.slp_burns,
-                        ),
-                    );
+                    valid_results.insert(tx_num, valid_tx_data);
                 }
-                Err(_err) => {
+                Err(err) => {
                     let num_outputs = batch_tx.tx.outputs.len();
-                    result.insert(
+                    invalid_results.insert(
                         tx_num,
-                        SlpTx::new(
-                            batch_tx.tx,
-                            None,
-                            spent_outputs
+                        SlpInvalidTxData {
+                            slp_burns: spent_outputs
                                 .iter()
                                 .map(|spent_output| {
                                     spent_output.map(|spent_output| {
@@ -111,7 +115,8 @@ pub fn validate_slp_batch(
                                     })
                                 })
                                 .collect(),
-                        ),
+                            slp_error: err,
+                        },
                     );
                     for out_idx in 0..num_outputs {
                         known_slp_outputs.insert(
@@ -129,7 +134,7 @@ pub fn validate_slp_batch(
             return Err(BatchError::FoundTxCircle(next_round.into_keys().collect()));
         }
         if next_round.is_empty() {
-            return Ok(result);
+            return Ok((valid_results, invalid_results));
         }
         txs = next_round;
     }
@@ -141,12 +146,12 @@ mod tests {
 
     use bitcoinsuite_core::{OutPoint, Sha256d, TxInput, TxOutput, UnhashedTx};
     use bitcoinsuite_slp::{
-        SlpBurn, SlpParseData, SlpSpentOutput, SlpToken, SlpTokenType, SlpTx, SlpTxData, SlpTxType,
-        TokenId,
+        SlpAmount, SlpBurn, SlpError, SlpParseData, SlpSpentOutput, SlpToken, SlpTokenType,
+        SlpTxData, SlpTxType, SlpValidTxData, TokenId,
     };
     use pretty_assertions::assert_eq;
 
-    use crate::{validate_slp_batch, BatchError, BatchSlpTx, OutpointEntry};
+    use crate::{validate_slp_batch, BatchError, BatchSlpTx, OutpointEntry, SlpInvalidTxData};
 
     #[test]
     fn test_validate_slp_batch_circle() {
@@ -163,7 +168,7 @@ mod tests {
                     1,
                     BatchSlpTx {
                         tx: make_tx([2], 2),
-                        input_tx_nums: vec![2],
+                        input_tx_nums: [2].into_iter().map(Some).collect(),
                         parsed_tx_data: parsed_tx_data.clone(),
                     },
                 ),
@@ -171,7 +176,7 @@ mod tests {
                     2,
                     BatchSlpTx {
                         tx: make_tx([2], 2),
-                        input_tx_nums: vec![1],
+                        input_tx_nums: [1].into_iter().map(Some).collect(),
                         parsed_tx_data: parsed_tx_data.clone(),
                     },
                 ),
@@ -202,7 +207,7 @@ mod tests {
                     3,
                     BatchSlpTx {
                         tx: make_tx([1], 2),
-                        input_tx_nums: vec![2],
+                        input_tx_nums: [2].into_iter().map(Some).collect(),
                         parsed_tx_data: SlpParseData {
                             slp_tx_type: SlpTxType::Send,
                             ..parsed_tx_data.clone()
@@ -213,7 +218,7 @@ mod tests {
                     2,
                     BatchSlpTx {
                         tx: make_tx([1], 2),
-                        input_tx_nums: vec![1],
+                        input_tx_nums: [1].into_iter().map(Some).collect(),
                         parsed_tx_data,
                     },
                 ),
@@ -223,40 +228,41 @@ mod tests {
             let known_slp_outputs = HashMap::new();
             assert_eq!(
                 validate_slp_batch(txs, known_slp_outputs),
-                Ok([
-                    (
-                        2,
-                        SlpTx::new(
-                            make_tx([1], 2),
-                            Some(SlpTxData {
-                                input_tokens: vec![SlpToken::EMPTY],
-                                output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(10)],
-                                slp_token_type: SlpTokenType::Fungible,
-                                slp_tx_type: SlpTxType::Genesis(Default::default()),
-                                token_id: token_id.clone(),
-                                group_token_id: None,
-                            }),
-                            vec![None],
+                Ok((
+                    [
+                        (
+                            2,
+                            SlpValidTxData {
+                                slp_tx_data: SlpTxData {
+                                    input_tokens: vec![SlpToken::EMPTY],
+                                    output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(10)],
+                                    slp_token_type: SlpTokenType::Fungible,
+                                    slp_tx_type: SlpTxType::Genesis(Default::default()),
+                                    token_id: token_id.clone(),
+                                    group_token_id: None,
+                                },
+                                slp_burns: vec![None],
+                            },
                         ),
-                    ),
-                    (
-                        3,
-                        SlpTx::new(
-                            make_tx([1], 2),
-                            Some(SlpTxData {
-                                input_tokens: vec![SlpToken::amount(10)],
-                                output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(10)],
-                                slp_token_type: SlpTokenType::Fungible,
-                                slp_tx_type: SlpTxType::Send,
-                                token_id: token_id.clone(),
-                                group_token_id: None,
-                            }),
-                            vec![None],
+                        (
+                            3,
+                            SlpValidTxData {
+                                slp_tx_data: SlpTxData {
+                                    input_tokens: vec![SlpToken::amount(10)],
+                                    output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(10)],
+                                    slp_token_type: SlpTokenType::Fungible,
+                                    slp_tx_type: SlpTxType::Send,
+                                    token_id: token_id.clone(),
+                                    group_token_id: None,
+                                },
+                                slp_burns: vec![None],
+                            },
                         ),
-                    ),
-                ]
-                .into_iter()
-                .collect()),
+                    ]
+                    .into_iter()
+                    .collect(),
+                    HashMap::new(),
+                )),
             );
         }
     }
@@ -287,8 +293,8 @@ mod tests {
                 (
                     3,
                     BatchSlpTx {
-                        tx: tx.clone(),
-                        input_tx_nums: vec![2],
+                        tx: &tx,
+                        input_tx_nums: [2].into_iter().map(Some).collect(),
                         parsed_tx_data: SlpParseData {
                             slp_tx_type: SlpTxType::Send,
                             ..parsed_tx_data.clone()
@@ -298,8 +304,8 @@ mod tests {
                 (
                     2,
                     BatchSlpTx {
-                        tx: tx.clone(),
-                        input_tx_nums: vec![1],
+                        tx: &tx,
+                        input_tx_nums: [1].into_iter().map(Some).collect(),
                         parsed_tx_data,
                     },
                 ),
@@ -322,40 +328,41 @@ mod tests {
             .collect();
             assert_eq!(
                 validate_slp_batch(txs, known_slp_outputs),
-                Ok([
-                    (
-                        2,
-                        SlpTx::new(
-                            tx.clone(),
-                            Some(SlpTxData {
-                                input_tokens: vec![SlpToken::MINT_BATON],
-                                output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(10)],
-                                slp_token_type: SlpTokenType::Fungible,
-                                slp_tx_type: SlpTxType::Mint,
-                                token_id: token_id.clone(),
-                                group_token_id: None,
-                            }),
-                            vec![None],
+                Ok((
+                    [
+                        (
+                            2,
+                            SlpValidTxData {
+                                slp_tx_data: SlpTxData {
+                                    input_tokens: vec![SlpToken::MINT_BATON],
+                                    output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(10)],
+                                    slp_token_type: SlpTokenType::Fungible,
+                                    slp_tx_type: SlpTxType::Mint,
+                                    token_id: token_id.clone(),
+                                    group_token_id: None,
+                                },
+                                slp_burns: vec![None],
+                            },
                         ),
-                    ),
-                    (
-                        3,
-                        SlpTx::new(
-                            tx.clone(),
-                            Some(SlpTxData {
-                                input_tokens: vec![SlpToken::amount(10)],
-                                output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(10)],
-                                slp_token_type: SlpTokenType::Fungible,
-                                slp_tx_type: SlpTxType::Send,
-                                token_id: token_id.clone(),
-                                group_token_id: None,
-                            }),
-                            vec![None],
+                        (
+                            3,
+                            SlpValidTxData {
+                                slp_tx_data: SlpTxData {
+                                    input_tokens: vec![SlpToken::amount(10)],
+                                    output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(10)],
+                                    slp_token_type: SlpTokenType::Fungible,
+                                    slp_tx_type: SlpTxType::Send,
+                                    token_id: token_id.clone(),
+                                    group_token_id: None,
+                                },
+                                slp_burns: vec![None],
+                            },
                         ),
-                    ),
-                ]
-                .into_iter()
-                .collect()),
+                    ]
+                    .into_iter()
+                    .collect(),
+                    HashMap::new()
+                )),
             );
         }
     }
@@ -373,7 +380,7 @@ mod tests {
                     11,
                     BatchSlpTx {
                         tx: make_tx([1], 2),
-                        input_tx_nums: vec![3],
+                        input_tx_nums: [3].into_iter().map(Some).collect(),
                         parsed_tx_data: SlpParseData {
                             output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(10)],
                             slp_token_type: SlpTokenType::Fungible,
@@ -386,7 +393,7 @@ mod tests {
                     12,
                     BatchSlpTx {
                         tx: make_tx([1], 2),
-                        input_tx_nums: vec![1],
+                        input_tx_nums: [1].into_iter().map(Some).collect(),
                         parsed_tx_data: SlpParseData {
                             output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(1)],
                             slp_token_type: SlpTokenType::Nft1Child,
@@ -399,7 +406,7 @@ mod tests {
                     13,
                     BatchSlpTx {
                         tx: make_tx([1], 3),
-                        input_tx_nums: vec![11],
+                        input_tx_nums: [11].into_iter().map(Some).collect(),
                         parsed_tx_data: SlpParseData {
                             output_tokens: vec![
                                 SlpToken::EMPTY,
@@ -417,7 +424,7 @@ mod tests {
                     14,
                     BatchSlpTx {
                         tx: make_tx([1], 2),
-                        input_tx_nums: vec![13],
+                        input_tx_nums: [13].into_iter().map(Some).collect(),
                         parsed_tx_data: SlpParseData {
                             output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(4)],
                             slp_token_type: SlpTokenType::Fungible,
@@ -431,7 +438,7 @@ mod tests {
                     15,
                     BatchSlpTx {
                         tx: make_tx([1], 2),
-                        input_tx_nums: vec![14],
+                        input_tx_nums: [14].into_iter().map(Some).collect(),
                         parsed_tx_data: SlpParseData {
                             output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(1)],
                             slp_token_type: SlpTokenType::Fungible,
@@ -444,7 +451,7 @@ mod tests {
                     16,
                     BatchSlpTx {
                         tx: make_tx([1], 2),
-                        input_tx_nums: vec![2],
+                        input_tx_nums: [2].into_iter().map(Some).collect(),
                         parsed_tx_data: SlpParseData {
                             output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(6)],
                             slp_token_type: SlpTokenType::Fungible,
@@ -484,47 +491,46 @@ mod tests {
             ]
             .into_iter()
             .collect();
-            let batch = validate_slp_batch(txs, known_slp_outputs).unwrap();
-            let mut batch = batch.into_iter().collect::<Vec<_>>();
-            batch.sort_unstable_by_key(|&(key, _)| key);
+            let (valid_batch, invalid_batch) = validate_slp_batch(txs, known_slp_outputs).unwrap();
+            let mut valid_batch = valid_batch.into_iter().collect::<Vec<_>>();
+            valid_batch.sort_unstable_by_key(|&(key, _)| key);
+            let mut invalid_batch = invalid_batch.into_iter().collect::<Vec<_>>();
+            invalid_batch.sort_unstable_by_key(|&(key, _)| key);
             assert_eq!(
-                batch,
+                valid_batch,
                 [
                     (
                         11,
-                        SlpTx::new(
-                            make_tx([1], 2),
-                            Some(SlpTxData {
+                        SlpValidTxData {
+                            slp_tx_data: SlpTxData {
                                 input_tokens: vec![SlpToken::EMPTY],
                                 output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(10)],
                                 slp_token_type: SlpTokenType::Fungible,
                                 slp_tx_type: SlpTxType::Genesis(Default::default()),
                                 token_id: token_id1.clone(),
                                 group_token_id: None,
-                            }),
-                            vec![None],
-                        ),
+                            },
+                            slp_burns: vec![None],
+                        },
                     ),
                     (
                         12,
-                        SlpTx::new(
-                            make_tx([1], 2),
-                            Some(SlpTxData {
+                        SlpValidTxData {
+                            slp_tx_data: SlpTxData {
                                 input_tokens: vec![SlpToken::amount(1)],
                                 output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(1)],
                                 slp_token_type: SlpTokenType::Nft1Child,
                                 slp_tx_type: SlpTxType::Genesis(Default::default()),
                                 token_id: token_id2_child.clone(),
                                 group_token_id: Some(token_id2_group.clone().into()),
-                            }),
-                            vec![None],
-                        ),
+                            },
+                            slp_burns: vec![None],
+                        },
                     ),
                     (
                         13,
-                        SlpTx::new(
-                            make_tx([1], 3),
-                            Some(SlpTxData {
+                        SlpValidTxData {
+                            slp_tx_data: SlpTxData {
                                 input_tokens: vec![SlpToken::amount(10)],
                                 output_tokens: vec![
                                     SlpToken::EMPTY,
@@ -535,36 +541,53 @@ mod tests {
                                 slp_tx_type: SlpTxType::Send,
                                 token_id: token_id1.clone(),
                                 group_token_id: None,
-                            }),
-                            vec![None],
-                        ),
+                            },
+                            slp_burns: vec![None],
+                        },
                     ),
-                    (
-                        14,
-                        SlpTx::new(
-                            make_tx([1], 2),
-                            None,
-                            vec![Some(Box::new(SlpBurn {
-                                token: SlpToken::amount(3),
-                                token_id: token_id1.clone(),
-                            }))],
-                        ),
-                    ),
-                    (15, SlpTx::new(make_tx([1], 2), None, vec![None])),
                     (
                         16,
-                        SlpTx::new(
-                            make_tx([1], 2),
-                            Some(SlpTxData {
+                        SlpValidTxData {
+                            slp_tx_data: SlpTxData {
                                 input_tokens: vec![SlpToken::amount(6)],
                                 output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(6)],
                                 slp_token_type: SlpTokenType::Fungible,
                                 slp_tx_type: SlpTxType::Send,
                                 token_id: token_id3.clone(),
                                 group_token_id: None,
-                            }),
-                            vec![None],
-                        ),
+                            },
+                            slp_burns: vec![None],
+                        },
+                    ),
+                ]
+                .into_iter()
+                .collect::<Vec<_>>(),
+            );
+            assert_eq!(
+                invalid_batch,
+                [
+                    (
+                        14,
+                        SlpInvalidTxData {
+                            slp_burns: vec![Some(Box::new(SlpBurn {
+                                token: SlpToken::amount(3),
+                                token_id: token_id1.clone(),
+                            }))],
+                            slp_error: SlpError::OutputSumExceedInputSum {
+                                input_sum: SlpAmount::new(3),
+                                output_sum: SlpAmount::new(4),
+                            },
+                        },
+                    ),
+                    (
+                        15,
+                        SlpInvalidTxData {
+                            slp_burns: vec![None],
+                            slp_error: SlpError::OutputSumExceedInputSum {
+                                input_sum: SlpAmount::ZERO,
+                                output_sum: SlpAmount::new(1),
+                            },
+                        },
                     ),
                 ]
                 .into_iter()
@@ -573,8 +596,11 @@ mod tests {
         }
     }
 
-    fn make_tx<const N: usize>(input_out_indices: [u32; N], num_outputs: usize) -> UnhashedTx {
-        UnhashedTx {
+    fn make_tx<const N: usize>(
+        input_out_indices: [u32; N],
+        num_outputs: usize,
+    ) -> &'static UnhashedTx {
+        Box::leak(Box::new(UnhashedTx {
             inputs: input_out_indices
                 .into_iter()
                 .map(|out_idx| TxInput {
@@ -587,6 +613,6 @@ mod tests {
                 .collect(),
             outputs: vec![TxOutput::default(); num_outputs],
             ..Default::default()
-        }
+        }))
     }
 }
