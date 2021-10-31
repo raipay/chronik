@@ -244,11 +244,11 @@ impl SlpIndexer {
     ) -> Result<()> {
         let txs = Self::_block_txs(&block)?;
         let tip = tip.unwrap();
-        let block_txids = block.txs.iter().map(|tx| &tx.tx.txid);
+        let txids_fn = |idx: usize| &block.txs[idx].tx.txid;
         self.db.delete_block(
             &block.header.hash,
             tip.height,
-            block_txids,
+            txids_fn,
             &txs,
             |tx_pos, input_idx| {
                 &block.txs[tx_pos + 1].tx.spent_coins.as_ref().unwrap()[input_idx]

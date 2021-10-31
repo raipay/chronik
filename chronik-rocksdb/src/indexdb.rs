@@ -85,6 +85,8 @@ impl IndexDb {
         let spends_writer = SpendsWriter::new(&self.db)?;
         let mut batch = WriteBatch::default();
 
+        let txids_fn = |idx: usize| &block_txs.txs[idx].txid;
+
         timings.timings.start_timer();
         block_writer.insert(&mut batch, block)?;
         timings.timings.stop_timer("blocks");
@@ -104,11 +106,10 @@ impl IndexDb {
         timings.outputs_timings.add(&outputs_timings);
 
         timings.timings.start_timer();
-        let block_txids = block_txs.txs.iter().map(|tx| &tx.txid);
         let utxos_timings = utxo_writer.insert_block_txs(
             &mut batch,
             first_tx_num,
-            block_txids.clone(),
+            &txids_fn,
             txs,
             block_spent_script_fn,
         )?;
@@ -116,7 +117,7 @@ impl IndexDb {
         timings.utxos_timings.add(&utxos_timings);
 
         timings.timings.start_timer();
-        spends_writer.insert_block_txs(&mut batch, first_tx_num, block_txids, txs)?;
+        spends_writer.insert_block_txs(&mut batch, first_tx_num, txids_fn, txs)?;
         timings.timings.stop_timer("spends");
 
         timings.timings.start_timer();
@@ -130,7 +131,7 @@ impl IndexDb {
         &self,
         block_hash: &Sha256d,
         height: BlockHeight,
-        block_txids: impl IntoIterator<Item = &'b Sha256d> + Clone,
+        txids_fn: impl Fn(usize) -> &'b Sha256d + Send + Sync,
         txs: &[UnhashedTx],
         block_spent_script_fn: impl Fn(/*tx_num:*/ usize, /*out_idx:*/ usize) -> &'b Script,
         cache: &mut IndexCache,
@@ -154,11 +155,11 @@ impl IndexDb {
         utxo_writer.delete_block_txs(
             &mut batch,
             first_tx_num,
-            block_txids.clone(),
+            &txids_fn,
             txs,
             block_spent_script_fn,
         )?;
-        spends_writer.delete_block_txs(&mut batch, first_tx_num, block_txids, txs)?;
+        spends_writer.delete_block_txs(&mut batch, first_tx_num, &txids_fn, txs)?;
         self.db.write_batch(batch)?;
         Ok(())
     }

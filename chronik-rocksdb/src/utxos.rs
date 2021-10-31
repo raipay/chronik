@@ -59,7 +59,7 @@ impl<'a> UtxosWriter<'a> {
         &self,
         batch: &mut WriteBatch,
         first_tx_num: TxNum,
-        block_txids: impl IntoIterator<Item = &'b Sha256d>,
+        txids_fn: impl Fn(usize) -> &'b Sha256d,
         txs: &[UnhashedTx],
         block_spent_script_fn: impl Fn(/*tx_num:*/ usize, /*out_idx:*/ usize) -> &'b Script,
     ) -> Result<Timings> {
@@ -69,8 +69,9 @@ impl<'a> UtxosWriter<'a> {
         timings.start_timer();
         // All new outpoints (tx_num, out_idx) from outputs by script
         let mut output_outpoints = HashMap::new();
-        for (tx, txid) in txs.iter().zip(block_txids) {
-            new_tx_nums.insert(txid, tx_num);
+        for (tx_idx, tx) in txs.iter().enumerate() {
+            let txid = txids_fn(tx_idx);
+            new_tx_nums.insert(txid.clone(), tx_num);
             for (out_idx, output) in tx.outputs.iter().enumerate() {
                 for (payload_prefix, mut script_payload) in script_payloads(&output.script) {
                     script_payload.insert(0, payload_prefix as u8);
@@ -190,13 +191,14 @@ impl<'a> UtxosWriter<'a> {
         &self,
         batch: &mut WriteBatch,
         first_tx_num: TxNum,
-        block_txids: impl IntoIterator<Item = &'b Sha256d>,
+        txids_fn: impl Fn(usize) -> &'b Sha256d,
         txs: &[UnhashedTx],
         block_spent_script_fn: impl Fn(/*tx_num:*/ usize, /*out_idx:*/ usize) -> &'b Script,
     ) -> Result<()> {
         let mut new_tx_nums = HashMap::new();
-        for (tx_idx, txid) in block_txids.into_iter().enumerate() {
-            new_tx_nums.insert(txid, first_tx_num + tx_idx as TxNum);
+        for tx_idx in 0..txs.len() {
+            let txid = txids_fn(tx_idx);
+            new_tx_nums.insert(txid.clone(), first_tx_num + tx_idx as TxNum);
         }
         let tx_reader = TxReader::new(self.db)?;
         let mut new_utxos = HashMap::<Vec<u8>, Vec<OutpointData>>::new();
@@ -423,7 +425,7 @@ mod test {
             utxo_writer.insert_block_txs(
                 &mut batch,
                 blocks[block_height].0,
-                &blocks[block_height].1,
+                |idx| &blocks[block_height].1[idx],
                 &blocks[block_height].2,
                 |tx_pos, input_idx| blocks[block_height].3[tx_pos][input_idx],
             )?;
@@ -442,7 +444,7 @@ mod test {
             utxo_writer.delete_block_txs(
                 &mut batch,
                 blocks[block_height].0,
-                &blocks[block_height].1,
+                |idx| &blocks[block_height].1[idx],
                 &blocks[block_height].2,
                 |tx_pos, input_idx| blocks[block_height].3[tx_pos][input_idx],
             )?;

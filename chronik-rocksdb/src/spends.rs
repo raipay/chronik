@@ -76,33 +76,34 @@ impl<'a> SpendsWriter<'a> {
         &self,
         batch: &mut WriteBatch,
         first_tx_num: TxNum,
-        block_txids: impl IntoIterator<Item = &'b Sha256d>,
+        txids_fn: impl Fn(usize) -> &'b Sha256d,
         txs: &[UnhashedTx],
     ) -> Result<()> {
-        self.update_block_txs(batch, first_tx_num, block_txids, txs, PREFIX_INSERT)
+        self.update_block_txs(batch, first_tx_num, txids_fn, txs, PREFIX_INSERT)
     }
 
     pub fn delete_block_txs<'b>(
         &self,
         batch: &mut WriteBatch,
         first_tx_num: TxNum,
-        block_txids: impl IntoIterator<Item = &'b Sha256d>,
+        txids_fn: impl Fn(usize) -> &'b Sha256d,
         txs: &[UnhashedTx],
     ) -> Result<()> {
-        self.update_block_txs(batch, first_tx_num, block_txids, txs, PREFIX_DELETE)
+        self.update_block_txs(batch, first_tx_num, txids_fn, txs, PREFIX_DELETE)
     }
 
     fn update_block_txs<'b>(
         &self,
         batch: &mut WriteBatch,
         first_tx_num: TxNum,
-        block_txids: impl IntoIterator<Item = &'b Sha256d>,
+        txids_fn: impl Fn(usize) -> &'b Sha256d,
         txs: &[UnhashedTx],
         prefix: u8,
     ) -> Result<()> {
         let mut new_tx_nums = HashMap::new();
-        for (tx_idx, txid) in block_txids.into_iter().enumerate() {
-            new_tx_nums.insert(txid, first_tx_num + tx_idx as TxNum);
+        for tx_idx in 0..txs.len() {
+            let txid = txids_fn(tx_idx);
+            new_tx_nums.insert(txid.clone(), first_tx_num + tx_idx as TxNum);
         }
         let tx_reader = TxReader::new(self.db)?;
         for (tx_idx, tx) in txs.iter().enumerate().skip(1) {
@@ -233,7 +234,7 @@ mod test {
             spends_writer.insert_block_txs(
                 &mut batch,
                 blocks[block_height].0,
-                &blocks[block_height].1,
+                |idx| &blocks[block_height].1[idx],
                 &blocks[block_height].2,
             )?;
             tx_writer.insert_block_txs(
@@ -251,7 +252,7 @@ mod test {
             spends_writer.delete_block_txs(
                 &mut batch,
                 blocks[block_height].0,
-                &blocks[block_height].1,
+                |idx| &blocks[block_height].1[idx],
                 &blocks[block_height].2,
             )?;
             tx_writer.delete_block_txs(&mut batch, block_height as BlockHeight)?;
