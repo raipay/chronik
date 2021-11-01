@@ -11,8 +11,8 @@ use crate::{OutpointEntry, TxNum};
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum BatchError {
-    #[error("Batch contains txs forming a circle: {0:?}")]
-    FoundTxCircle(HashSet<TxNum>),
+    #[error("Batch contains txs forming a cycle: {0:?}")]
+    FoundTxCycle(HashSet<TxNum>),
 }
 
 pub struct BatchSlpTx<'a> {
@@ -81,20 +81,20 @@ pub fn validate_slp_batch(
                 .collect::<Vec<_>>();
             match validate_slp_tx(batch_tx.parsed_tx_data, &spent_outputs) {
                 Ok(valid_tx_data) => {
-                    for (out_idx, &token) in
-                        valid_tx_data.slp_tx_data.output_tokens.iter().enumerate()
-                    {
+                    for out_idx in 0..batch_tx.tx.outputs.len() {
+                        let token = valid_tx_data.slp_tx_data.output_tokens.get(out_idx);
+                        let spent_output = token.map(|&token| SlpSpentOutput {
+                            token_id: valid_tx_data.slp_tx_data.token_id.clone(),
+                            token_type: valid_tx_data.slp_tx_data.slp_token_type,
+                            token,
+                            group_token_id: valid_tx_data.slp_tx_data.group_token_id.clone(),
+                        });
                         known_slp_outputs.insert(
                             OutpointEntry {
                                 tx_num,
                                 out_idx: out_idx as u32,
                             },
-                            Some(SlpSpentOutput {
-                                token_id: valid_tx_data.slp_tx_data.token_id.clone(),
-                                token_type: valid_tx_data.slp_tx_data.slp_token_type,
-                                token,
-                                group_token_id: valid_tx_data.slp_tx_data.group_token_id.clone(),
-                            }),
+                            spent_output,
                         );
                     }
                     valid_results.insert(tx_num, valid_tx_data);
@@ -131,7 +131,7 @@ pub fn validate_slp_batch(
             }
         }
         if is_only_orphans {
-            return Err(BatchError::FoundTxCircle(next_round.into_keys().collect()));
+            return Err(BatchError::FoundTxCycle(next_round.into_keys().collect()));
         }
         if next_round.is_empty() {
             return Ok((valid_results, invalid_results));
@@ -186,7 +186,7 @@ mod tests {
             let known_slp_outputs = HashMap::new();
             assert_eq!(
                 validate_slp_batch(txs, known_slp_outputs),
-                Err(BatchError::FoundTxCircle([1, 2].into_iter().collect()))
+                Err(BatchError::FoundTxCycle([1, 2].into_iter().collect()))
             );
         }
     }
@@ -379,7 +379,7 @@ mod tests {
                 (
                     11,
                     BatchSlpTx {
-                        tx: make_tx([1], 2),
+                        tx: make_tx([1], 3),
                         input_tx_nums: [3].into_iter().map(Some).collect(),
                         parsed_tx_data: SlpParseData {
                             output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(10)],
@@ -392,8 +392,8 @@ mod tests {
                 (
                     12,
                     BatchSlpTx {
-                        tx: make_tx([1], 2),
-                        input_tx_nums: [1].into_iter().map(Some).collect(),
+                        tx: make_tx([1, 2], 2),
+                        input_tx_nums: [1, 11].into_iter().map(Some).collect(),
                         parsed_tx_data: SlpParseData {
                             output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(1)],
                             slp_token_type: SlpTokenType::Nft1Child,
@@ -517,14 +517,14 @@ mod tests {
                         12,
                         SlpValidTxData {
                             slp_tx_data: SlpTxData {
-                                input_tokens: vec![SlpToken::amount(1)],
+                                input_tokens: vec![SlpToken::amount(1), SlpToken::EMPTY],
                                 output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(1)],
                                 slp_token_type: SlpTokenType::Nft1Child,
                                 slp_tx_type: SlpTxType::Genesis(Default::default()),
                                 token_id: token_id2_child.clone(),
                                 group_token_id: Some(token_id2_group.clone().into()),
                             },
-                            slp_burns: vec![None],
+                            slp_burns: vec![None, None],
                         },
                     ),
                     (
