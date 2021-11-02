@@ -130,11 +130,11 @@ pub fn validate_slp_batch(
                 }
             }
         }
-        if is_only_orphans {
-            return Err(BatchError::FoundTxCycle(next_round.into_keys().collect()));
-        }
         if next_round.is_empty() {
             return Ok((valid_results, invalid_results));
+        }
+        if is_only_orphans {
+            return Err(BatchError::FoundTxCycle(next_round.into_keys().collect()));
         }
         txs = next_round;
     }
@@ -152,6 +152,14 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use crate::{validate_slp_batch, BatchError, BatchSlpTx, OutpointEntry, SlpInvalidTxData};
+
+    #[test]
+    fn test_validate_slp_batch_empty() {
+        assert_eq!(
+            validate_slp_batch(HashMap::new(), HashMap::new()),
+            Ok((HashMap::new(), HashMap::new())),
+        );
+    }
 
     #[test]
     fn test_validate_slp_batch_circle() {
