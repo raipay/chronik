@@ -7,8 +7,8 @@ use thiserror::Error;
 
 use crate::{
     Block, BlockHeight, BlockReader, BlockTxs, BlockWriter, Db, OutputsConf, OutputsReader,
-    OutputsWriter, OutputsWriterCache, SpendsReader, SpendsWriter, Timings, TxReader, TxWriter,
-    UtxosReader, UtxosWriter,
+    OutputsWriter, OutputsWriterCache, SlpWriter, SpendsReader, SpendsWriter, Timings, TxReader,
+    TxWriter, UtxosReader, UtxosWriter,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
@@ -83,6 +83,7 @@ impl IndexDb {
         let output_writer = OutputsWriter::new(&self.db, conf)?;
         let utxo_writer = UtxosWriter::new(&self.db)?;
         let spends_writer = SpendsWriter::new(&self.db)?;
+        let slp_writer = SlpWriter::new(&self.db)?;
         let mut batch = WriteBatch::default();
 
         let txids_fn = |idx: usize| &block_txs.txs[idx].txid;
@@ -121,6 +122,10 @@ impl IndexDb {
         timings.timings.stop_timer("spends");
 
         timings.timings.start_timer();
+        slp_writer.insert_block_txs(&mut batch, first_tx_num, &txs, txids_fn)?;
+        timings.timings.stop_timer("slp");
+
+        timings.timings.start_timer();
         self.db.write_batch(batch)?;
         timings.timings.stop_timer("insert");
 
@@ -142,6 +147,7 @@ impl IndexDb {
         let output_writer = OutputsWriter::new(&self.db, conf)?;
         let utxo_writer = UtxosWriter::new(&self.db)?;
         let spends_writer = SpendsWriter::new(&self.db)?;
+        let slp_writer = SlpWriter::new(&self.db)?;
         let tx_reader = TxReader::new(&self.db)?;
         let first_tx_num = tx_reader.first_tx_num_by_block(height)?.unwrap();
         let mut batch = WriteBatch::default();
@@ -160,6 +166,7 @@ impl IndexDb {
             block_spent_script_fn,
         )?;
         spends_writer.delete_block_txs(&mut batch, first_tx_num, &txids_fn, txs)?;
+        slp_writer.delete_block_txs(&mut batch, first_tx_num, txs, &txids_fn)?;
         self.db.write_batch(batch)?;
         Ok(())
     }
