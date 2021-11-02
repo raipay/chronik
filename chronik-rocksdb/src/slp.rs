@@ -701,10 +701,10 @@ fn get_token_id_by_token_num(db: &Db, token_num: TokenNum) -> Result<TokenId> {
 /// Ignore txs which don't look like SLP at all
 fn is_ignored_error(slp_error: &SlpError) -> bool {
     match slp_error {
+        SlpError::NoOpcodes => true,
         SlpError::MissingOpReturn { .. } => true,
         SlpError::InvalidLokadId { .. } => true,
         SlpError::BytesError { .. } => true,
-        &SlpError::TooFewPushes { actual, .. } if actual <= 3 => true,
         _ => false,
     }
 }
@@ -972,11 +972,14 @@ mod tests {
                     Script::opreturn(&[b"SLP", b"\x01"]),
                     Outcome::NotSlp,
                 ),
-                // Not SLP: too few pushops
+                // Invalid SLP: too few pushops
                 make_tx(
                     (32, [(11, 4)], 2),
                     Script::opreturn(&[b"SLP\0", b"\x01"]),
-                    Outcome::NotSlp,
+                    Outcome::Invalid(SlpError::TooFewPushes {
+                        actual: 2,
+                        expected: 3,
+                    }),
                 ),
                 // Invalid SLP tx: invalid tx type "INVALID"
                 make_tx(
