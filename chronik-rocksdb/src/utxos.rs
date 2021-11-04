@@ -35,6 +35,14 @@ pub enum UtxosError {
     #[critical()]
     #[error("Unknown input spent: {0:?}")]
     UnknownInputSpent(OutPoint),
+
+    #[critical()]
+    #[error("Inconsistent DB state, UTXO already exists: {0:?}")]
+    InconsistentDbUtxoAlreadyExists(OutpointData),
+
+    #[critical()]
+    #[error("Inconsistent DB state, UTXO doesn't exists: {0:?}")]
+    InconsistentDbUtxoDoesntExists(OutpointData),
 }
 
 use self::UtxosError::*;
@@ -97,8 +105,9 @@ impl<'a> UtxosWriter<'a> {
                         tx_num: tx_num.into(),
                         out_idx: U32::new(out_idx),
                     };
-                    if let Err(idx) = db_outpoints.binary_search(&script_entry) {
-                        db_outpoints.insert(idx, script_entry);
+                    match db_outpoints.binary_search(&script_entry) {
+                        Err(idx) => db_outpoints.insert(idx, script_entry),
+                        Ok(_) => return Err(InconsistentDbUtxoAlreadyExists(script_entry).into()),
                     }
                 }
                 Ok((script_payload, db_outpoints))
@@ -158,8 +167,11 @@ impl<'a> UtxosWriter<'a> {
                         tx_num: tx_num.into(),
                         out_idx: U32::new(out_idx),
                     };
-                    if let Ok(idx) = outpoints.binary_search(&script_entry) {
-                        outpoints.remove(idx);
+                    match outpoints.binary_search(&script_entry) {
+                        Ok(idx) => {
+                            outpoints.remove(idx);
+                        }
+                        Err(_) => return Err(InconsistentDbUtxoDoesntExists(script_entry).into()),
                     }
                 }
                 Ok((script_payload, outpoints))
