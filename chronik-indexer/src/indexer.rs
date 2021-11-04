@@ -5,7 +5,7 @@ use bitcoinsuite_error::{ErrorMeta, Result};
 use thiserror::Error;
 
 use chronik_rocksdb::{
-    Block, BlockReader, BlockTxs, IndexCache, IndexDb, OutputsReader, SpendsReader, TxEntry,
+    Block, BlockReader, BlockTxs, IndexDb, IndexMemData, OutputsReader, SpendsReader, TxEntry,
     TxReader, UtxosReader,
 };
 
@@ -14,7 +14,7 @@ pub struct SlpIndexer {
     bitcoind: BitcoinCli,
     rpc_interface: RpcInterface,
     pub_interface: PubInterface,
-    cache: IndexCache,
+    data: IndexMemData,
 }
 
 #[derive(Debug, Error, ErrorMeta)]
@@ -41,7 +41,7 @@ impl SlpIndexer {
         bitcoind: BitcoinCli,
         rpc_interface: RpcInterface,
         pub_interface: PubInterface,
-        cache: IndexCache,
+        data: IndexMemData,
     ) -> Result<Self> {
         pub_interface.subscribe("------------")?;
         Ok(SlpIndexer {
@@ -49,7 +49,7 @@ impl SlpIndexer {
             bitcoind,
             rpc_interface,
             pub_interface,
-            cache,
+            data,
         })
     }
 
@@ -228,7 +228,7 @@ impl SlpIndexer {
                     .tx_output
                     .script
             },
-            &mut self.cache,
+            &mut self.data,
         )?;
         println!(
             "Added block {} with {} txs, height {}",
@@ -255,7 +255,7 @@ impl SlpIndexer {
                     .tx_output
                     .script
             },
-            &mut self.cache,
+            &mut self.data,
         )?;
         println!(
             "Removed block {} via BlockDisconnected message",

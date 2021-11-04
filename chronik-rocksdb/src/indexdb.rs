@@ -23,7 +23,7 @@ pub struct IndexDb {
     timings: RwLock<IndexTimings>,
 }
 
-pub struct IndexCache {
+pub struct IndexMemData {
     outputs_cache: OutputsWriterCache,
 }
 
@@ -74,7 +74,7 @@ impl IndexDb {
         block_txs: &'b BlockTxs,
         txs: &[UnhashedTx],
         block_spent_script_fn: impl Fn(/*tx_num:*/ usize, /*out_idx:*/ usize) -> &'b Script,
-        cache: &mut IndexCache,
+        data: &mut IndexMemData,
     ) -> Result<()> {
         let mut timings = self.timings.write().unwrap();
         let block_writer = BlockWriter::new(&self.db)?;
@@ -101,7 +101,7 @@ impl IndexDb {
             &mut batch,
             first_tx_num,
             txs,
-            &mut cache.outputs_cache,
+            &mut data.outputs_cache,
         )?;
         timings.timings.stop_timer("outputs");
         timings.outputs_timings.add(&outputs_timings);
@@ -139,7 +139,7 @@ impl IndexDb {
         txids_fn: impl Fn(usize) -> &'b Sha256d + Send + Sync,
         txs: &[UnhashedTx],
         block_spent_script_fn: impl Fn(/*tx_num:*/ usize, /*out_idx:*/ usize) -> &'b Script,
-        cache: &mut IndexCache,
+        data: &mut IndexMemData,
     ) -> Result<()> {
         let block_writer = BlockWriter::new(&self.db)?;
         let tx_writer = TxWriter::new(&self.db)?;
@@ -157,7 +157,7 @@ impl IndexDb {
             .by_hash(block_hash)?
             .ok_or_else(|| UnknownBlock(block_hash.clone()))?;
         tx_writer.delete_block_txs(&mut batch, block.height)?;
-        output_writer.delete_block_txs(&mut batch, first_tx_num, txs, &mut cache.outputs_cache)?;
+        output_writer.delete_block_txs(&mut batch, first_tx_num, txs, &mut data.outputs_cache)?;
         utxo_writer.delete_block_txs(
             &mut batch,
             first_tx_num,
@@ -172,9 +172,9 @@ impl IndexDb {
     }
 }
 
-impl IndexCache {
+impl IndexMemData {
     pub fn new(outputs_capacity: usize) -> Self {
-        IndexCache {
+        IndexMemData {
             outputs_cache: OutputsWriterCache::with_capacity(outputs_capacity),
         }
     }

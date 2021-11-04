@@ -13,7 +13,7 @@ use bitcoinsuite_error::Result;
 use bitcoinsuite_test_utils::bin_folder;
 use chronik_indexer::SlpIndexer;
 use chronik_rocksdb::{
-    BlockTx, Db, IndexCache, IndexDb, OutpointEntry, OutputsReader, PayloadPrefix, TxEntry,
+    BlockTx, Db, IndexDb, IndexMemData, OutpointEntry, OutputsReader, PayloadPrefix, TxEntry,
     UtxosReader,
 };
 use pretty_assertions::assert_eq;
@@ -44,7 +44,7 @@ fn test_non_slp() -> Result<()> {
     let db = Db::open(dir.path().join("index.rocksdb"))?;
     let db = IndexDb::new(db);
     let bitcoin_cli = instance.cli();
-    let cache = IndexCache::new(10);
+    let cache = IndexMemData::new(10);
     let mut slp_indexer =
         SlpIndexer::new(db, bitcoin_cli.clone(), rpc_interface, pub_interface, cache)?;
     test_index_genesis(&mut slp_indexer, bitcoin_cli)?;
