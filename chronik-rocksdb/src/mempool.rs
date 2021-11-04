@@ -4,7 +4,7 @@ use bitcoinsuite_core::{Script, Sha256d, UnhashedTx};
 use bitcoinsuite_error::{ErrorMeta, Result};
 use thiserror::Error;
 
-use crate::{Db, MempoolData, MempoolSlpData};
+use crate::{Db, MempoolData, MempoolDeleteMode, MempoolSlpData};
 
 pub struct MempoolWriter<'a> {
     db: &'a Db,
@@ -37,9 +37,9 @@ impl<'a> MempoolWriter<'a> {
         Ok(())
     }
 
-    pub fn delete_mempool_tx(&mut self, txid: &Sha256d) -> Result<()> {
+    pub fn delete_mempool_tx(&mut self, txid: &Sha256d, mode: MempoolDeleteMode) -> Result<()> {
         self.mempool_slp.delete_mempool_tx(txid);
-        self.mempool.delete_mempool_tx(txid)?;
+        self.mempool.delete_mempool_tx(txid, mode)?;
         Ok(())
     }
 
@@ -72,18 +72,23 @@ impl<'a> MempoolWriter<'a> {
         }
     }
 
-    pub fn delete_mempool_batch_txs(&mut self, mut txids: HashSet<&Sha256d>) -> Result<()> {
+    pub fn delete_mempool_mined_txs(&mut self, mut txids: HashSet<&Sha256d>) -> Result<()> {
         let mut next_round = HashSet::new();
         loop {
             let mut is_only_parents = true;
-            for &txid in &txids {
-                // Only remove txs that have no dependents
-                if self.mempool.spends(txid).is_some() {
-                    next_round.insert(txid);
-                    continue;
+            'tx_loop: for &txid in &txids {
+                let (tx, _) = self
+                    .mempool
+                    .tx(txid)
+                    .ok_or_else(|| NoSuchTx(txid.clone()))?;
+                for input in &tx.inputs {
+                    if txids.contains(&input.prev_out.txid) {
+                        next_round.insert(txid);
+                        continue 'tx_loop;
+                    }
                 }
                 is_only_parents = false;
-                self.delete_mempool_tx(txid)?;
+                self.delete_mempool_tx(txid, MempoolDeleteMode::Mined)?;
             }
             if next_round.is_empty() {
                 return Ok(());
@@ -116,6 +121,7 @@ mod tests {
 
     #[test]
     fn test_mempool_batch() -> Result<()> {
+        bitcoinsuite_error::install()?;
         let tempdir = tempdir::TempDir::new("slp-indexer-rocks--mempool")?;
         let db = Db::open(tempdir.path())?;
         let tx_writer = TxWriter::new(&db)?;
@@ -171,9 +177,9 @@ mod tests {
             make_tx((10, [(2, 0)], 3), Script::default()),
             make_tx((11, [(10, 2), (2, 1)], 3), Script::default()),
             make_tx((12, [(11, 0), (3, 0), (13, 0)], 3), Script::default()),
-            make_tx((13, [(3, 1)], 3), Script::default()),
+            make_tx((13, [(3, 1)], 4), Script::default()),
             make_tx((14, [(13, 1)], 3), Script::default()),
-            make_tx((15, [(14, 0), (13, 0)], 3), Script::default()),
+            make_tx((15, [(14, 0), (13, 3)], 3), Script::default()),
             make_tx((16, [(15, 0), (13, 2), (3, 2)], 3), Script::default()),
             make_tx(
                 (17, [(5, 1)], 3),
@@ -188,6 +194,8 @@ mod tests {
                 send_opreturn(&token_id, SlpTokenType::Fungible, &[SlpAmount::new(8)]),
             ),
         ];
+        // Drop txs out of mempool (due to mining) in this order:
+        let mine_blocks: &[&[u8]] = &[&[10, 11, 17], &[13, 12], &[14, 15, 16], &[18]];
         // Run multiple times to cover different orders of the HashMap
         for _ in 0..100 {
             let txs = mempool_batch
@@ -247,11 +255,14 @@ mod tests {
                     slp_burns: vec![None, None],
                 }),
             );
-            let txids = mempool_batch
-                .iter()
-                .map(|(txid, _)| txid)
-                .collect::<HashSet<_>>();
-            mempool_writer.delete_mempool_batch_txs(txids)?;
+            for &mine_block in mine_blocks {
+                let txids = mine_block
+                    .iter()
+                    .map(|&hash_byte| make_hash(hash_byte))
+                    .collect::<Vec<_>>();
+                let txids = txids.iter().collect::<HashSet<_>>();
+                mempool_writer.delete_mempool_mined_txs(txids)?;
+            }
             for hash_byte in 10..=18 {
                 let txid = make_hash(hash_byte);
                 assert!(
