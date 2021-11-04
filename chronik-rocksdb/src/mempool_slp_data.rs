@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use bitcoinsuite_core::{Sha256d, UnhashedTx};
-use bitcoinsuite_slp::{parse_slp_tx, validate_slp_tx, SlpError, SlpSpentOutput, SlpValidTxData};
 use bitcoinsuite_error::{ErrorMeta, Result};
+use bitcoinsuite_slp::{parse_slp_tx, validate_slp_tx, SlpError, SlpSpentOutput, SlpValidTxData};
 use thiserror::Error;
 
 use crate::{is_ignored_error, Db, SlpReader, TxReader};
@@ -101,11 +101,11 @@ impl MempoolSlpData {
 #[cfg(test)]
 mod tests {
     use bitcoinsuite_core::{OutPoint, Script, Sha256d, TxInput, TxOutput, UnhashedTx};
+    use bitcoinsuite_error::Result;
     use bitcoinsuite_slp::{
         genesis_opreturn, send_opreturn, SlpAmount, SlpError, SlpGenesisInfo, SlpToken,
         SlpTokenType, SlpTxData, SlpTxType, SlpValidTxData, TokenId,
     };
-    use bitcoinsuite_error::Result;
     use rocksdb::WriteBatch;
 
     use crate::{BlockTxs, Db, MempoolSlpData, SlpWriter, TxEntry, TxWriter};

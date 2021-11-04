@@ -4,7 +4,7 @@ use bitcoinsuite_core::{Bytes, OutPoint, Script, Sha256d, UnhashedTx};
 use bitcoinsuite_error::{ErrorMeta, Result};
 use thiserror::Error;
 
-use crate::script_payload::script_payloads;
+use crate::{script_payload::script_payloads, PayloadPrefix};
 
 #[derive(Debug, PartialEq, Eq, Default)]
 pub struct MempoolData {
@@ -15,13 +15,13 @@ pub struct MempoolData {
 }
 
 #[derive(Debug, PartialEq, Eq, Default)]
-struct UtxoDelta {
+pub struct UtxoDelta {
     inserts: BTreeSet<OutPoint>,
     deletes: BTreeSet<OutPoint>,
 }
 
 #[derive(Debug, Error, ErrorMeta)]
-pub enum MempoolError {
+pub enum MempoolDataError {
     #[critical()]
     #[error("No such mempool tx: {0}")]
     NoSuchTx(Sha256d),
@@ -63,7 +63,7 @@ pub enum MempoolError {
     UtxoDoesntExist(OutPoint),
 }
 
-use self::MempoolError::*;
+use self::MempoolDataError::*;
 
 impl MempoolData {
     pub fn insert_mempool_tx(
@@ -205,6 +205,34 @@ impl MempoolData {
             }
         }
         Ok(())
+    }
+
+    pub fn tx(&self, txid: &Sha256d) -> Option<&(UnhashedTx, Vec<Script>)> {
+        self.txs.get(txid)
+    }
+
+    pub fn outputs(&self, prefix: PayloadPrefix, payload: &[u8]) -> Option<&BTreeSet<OutPoint>> {
+        let script_payload = [[prefix as u8].as_ref(), payload].concat();
+        self.outputs.get(script_payload.as_slice())
+    }
+
+    pub fn utxos(&self, prefix: PayloadPrefix, payload: &[u8]) -> Option<&UtxoDelta> {
+        let script_payload = [[prefix as u8].as_ref(), payload].concat();
+        self.utxos.get(script_payload.as_slice())
+    }
+
+    pub fn spends(&self, txid: &Sha256d) -> Option<&BTreeSet<(u32, Sha256d, u32)>> {
+        self.spends.get(txid)
+    }
+}
+
+impl UtxoDelta {
+    pub fn inserts(&self) -> &BTreeSet<OutPoint> {
+        &self.inserts
+    }
+
+    pub fn deletes(&self) -> &BTreeSet<OutPoint> {
+        &self.deletes
     }
 }
 
