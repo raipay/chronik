@@ -699,7 +699,7 @@ fn get_token_id_by_token_num(db: &Db, token_num: TokenNum) -> Result<TokenId> {
 }
 
 /// Ignore txs which don't look like SLP at all
-fn is_ignored_error(slp_error: &SlpError) -> bool {
+pub fn is_ignored_error(slp_error: &SlpError) -> bool {
     matches!(
         slp_error,
         SlpError::NoOpcodes
