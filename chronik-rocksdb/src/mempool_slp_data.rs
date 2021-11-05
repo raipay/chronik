@@ -1,9 +1,8 @@
 use std::collections::HashMap;
 
 use bitcoinsuite_core::{Sha256d, UnhashedTx};
-use bitcoinsuite_error::{ErrorMeta, Result};
+use bitcoinsuite_error::Result;
 use bitcoinsuite_slp::{parse_slp_tx, validate_slp_tx, SlpError, SlpSpentOutput, SlpValidTxData};
-use thiserror::Error;
 
 use crate::{is_ignored_error, Db, SlpReader, TxReader};
 
@@ -12,15 +11,6 @@ pub struct MempoolSlpData {
     valid_slp_txs: HashMap<Sha256d, SlpValidTxData>,
     invalid_slp_txs: HashMap<Sha256d, SlpError>,
 }
-
-#[derive(Debug, Error, ErrorMeta)]
-pub enum MempoolSlpError {
-    #[critical()]
-    #[error("No such tx: {0}")]
-    NoSuchTx(Sha256d),
-}
-
-use self::MempoolSlpError::*;
 
 impl MempoolSlpData {
     pub fn insert_mempool_tx(&mut self, db: &Db, txid: &Sha256d, tx: &UnhashedTx) -> Result<()> {
@@ -43,22 +33,21 @@ impl MempoolSlpData {
                         }
                         None => match self.invalid_slp_txs.get(&input.prev_out.txid) {
                             Some(_) => None,
-                            None => {
-                                let tx_num = tx_reader
-                                    .tx_num_by_txid(&input.prev_out.txid)?
-                                    .ok_or_else(|| NoSuchTx(input.prev_out.txid.clone()))?;
-                                slp_reader.slp_data_by_tx_num(tx_num)?.and_then(
-                                    |(slp_tx_data, _)| {
-                                        let token = *slp_tx_data.output_tokens.get(out_idx)?;
-                                        Some(SlpSpentOutput {
-                                            token_id: slp_tx_data.token_id,
-                                            token_type: slp_tx_data.slp_token_type,
-                                            token,
-                                            group_token_id: slp_tx_data.group_token_id,
-                                        })
-                                    },
-                                )
-                            }
+                            None => tx_reader
+                                .tx_num_by_txid(&input.prev_out.txid)?
+                                .and_then(|tx_num| {
+                                    slp_reader.slp_data_by_tx_num(tx_num).transpose()
+                                })
+                                .transpose()?
+                                .and_then(|(slp_tx_data, _)| {
+                                    let token = *slp_tx_data.output_tokens.get(out_idx)?;
+                                    Some(SlpSpentOutput {
+                                        token_id: slp_tx_data.token_id,
+                                        token_type: slp_tx_data.slp_token_type,
+                                        token,
+                                        group_token_id: slp_tx_data.group_token_id,
+                                    })
+                                }),
                         },
                     });
                 }
@@ -106,6 +95,7 @@ mod tests {
         genesis_opreturn, send_opreturn, SlpAmount, SlpError, SlpGenesisInfo, SlpToken,
         SlpTokenType, SlpTxData, SlpTxType, SlpValidTxData, TokenId,
     };
+    use pretty_assertions::assert_eq;
     use rocksdb::WriteBatch;
 
     use crate::{BlockTxs, Db, MempoolSlpData, SlpWriter, TxEntry, TxWriter};
@@ -218,6 +208,31 @@ mod tests {
         slp_mempool.insert_mempool_tx(&db, &txid1, &tx1)?;
         assert_eq!(slp_mempool.slp_tx_data(&txid1), None);
         assert_eq!(slp_mempool.slp_tx_error(&txid1), None);
+
+        let (txid2, tx2) = make_tx(
+            (12, [(3, 1), (10, 1), (11, 1)], 2),
+            send_opreturn(
+                &token_id,
+                SlpTokenType::Fungible,
+                &[SlpAmount::new(1), SlpAmount::new(2)],
+            ),
+        );
+        slp_mempool.insert_mempool_tx(&db, &txid2, &tx2)?;
+        assert_eq!(slp_mempool.slp_tx_error(&txid2), None);
+        assert_eq!(
+            slp_mempool.slp_tx_data(&txid2),
+            Some(&SlpValidTxData {
+                slp_tx_data: SlpTxData {
+                    input_tokens: vec![SlpToken::amount(3), SlpToken::EMPTY, SlpToken::EMPTY],
+                    output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(1), SlpToken::amount(2)],
+                    slp_token_type: SlpTokenType::Fungible,
+                    slp_tx_type: SlpTxType::Send,
+                    token_id,
+                    group_token_id: None,
+                },
+                slp_burns: vec![None, None, None],
+            })
+        );
 
         slp_mempool.delete_mempool_tx(&txid1);
         assert_eq!(slp_mempool.slp_tx_data(&txid1), None);
