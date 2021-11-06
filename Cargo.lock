@@ -346,6 +346,7 @@ dependencies = [
  "bitcoinsuite-error",
  "bitcoinsuite-slp",
  "bitcoinsuite-test-utils",
+ "bitcoinsuite-test-utils-blockchain",
  "chronik-rocksdb",
  "hex",
  "pretty_assertions",

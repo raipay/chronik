@@ -7,9 +7,9 @@ use thiserror::Error;
 use crate::{Db, MempoolData, MempoolDeleteMode, MempoolSlpData};
 
 pub struct MempoolWriter<'a> {
-    db: &'a Db,
-    mempool: &'a mut MempoolData,
-    mempool_slp: &'a mut MempoolSlpData,
+    pub db: &'a Db,
+    pub mempool: &'a mut MempoolData,
+    pub mempool_slp: &'a mut MempoolSlpData,
 }
 
 #[derive(Debug, Error, ErrorMeta)]

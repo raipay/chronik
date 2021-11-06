@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use bitcoinsuite_bitcoind::cli::BitcoinCli;
 use bitcoinsuite_bitcoind_nng::{Message, PubInterface, RpcInterface};
 use bitcoinsuite_core::{BitcoinCode, Bytes, Hashed, Sha256d, UnhashedTx};
@@ -5,8 +7,8 @@ use bitcoinsuite_error::{ErrorMeta, Result};
 use thiserror::Error;
 
 use chronik_rocksdb::{
-    Block, BlockReader, BlockTxs, IndexDb, IndexMemData, OutputsReader, SpendsReader, TxEntry,
-    TxReader, UtxosReader,
+    Block, BlockReader, BlockTxs, IndexDb, IndexMemData, MempoolData, MempoolSlpData,
+    OutputsReader, SpendsReader, TxEntry, TxReader, UtxosReader,
 };
 
 pub struct SlpIndexer {
@@ -131,10 +133,30 @@ impl SlpIndexer {
         Ok(false)
     }
 
-    pub fn leave_catchup(&self) -> Result<()> {
+    pub fn leave_catchup(&mut self) -> Result<()> {
+        let mempool = self.rpc_interface.get_mempool()?;
         self.pub_interface.unsubscribe("------------")?;
         self.pub_interface.subscribe("blkconnected")?;
         self.pub_interface.subscribe("blkdisconctd")?;
+        self.pub_interface.subscribe("mempooltxadd")?;
+        self.pub_interface.subscribe("mempooltxrem")?;
+        let txs = mempool
+            .into_iter()
+            .map(|mempool_tx| {
+                let mut raw_tx = Bytes::from_bytes(mempool_tx.tx.raw);
+                let tx = UnhashedTx::deser(&mut raw_tx)?;
+                let spent_scripts = mempool_tx
+                    .tx
+                    .spent_coins
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|coin| coin.tx_output.script)
+                    .collect::<Vec<_>>();
+                Ok((mempool_tx.tx.txid, (tx, spent_scripts)))
+            })
+            .collect::<Result<HashMap<_, _>>>()?;
+        println!("Found {} txs in mempool", txs.len());
+        self.db.insert_mempool_batch_txs(&mut self.data, txs)?;
         Ok(())
     }
 
@@ -153,6 +175,28 @@ impl SlpIndexer {
                 );
                 let tip = self.db.blocks()?.tip()?;
                 self._handle_block_disconnected(tip, block_disconnected.block)?;
+            }
+            Message::TransactionAddedToMempool(mempool_tx_added) => {
+                let mempool_tx = mempool_tx_added.mempool_tx.tx;
+                println!("Got TransactionAddedToMempool {}", mempool_tx.txid);
+                let mut raw_tx = Bytes::from_bytes(mempool_tx.raw);
+                let tx = UnhashedTx::deser(&mut raw_tx)?;
+                let spent_scripts = mempool_tx
+                    .spent_coins
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|coin| coin.tx_output.script)
+                    .collect::<Vec<_>>();
+                self.db
+                    .insert_mempool_tx(&mut self.data, mempool_tx.txid, tx, spent_scripts)?;
+            }
+            Message::TransactionRemovedFromMempool(mempool_tx_removed) => {
+                println!(
+                    "Got TransactionRemovedFromMempool {}",
+                    mempool_tx_removed.txid
+                );
+                self.db
+                    .remove_mempool_tx(&mut self.data, &mempool_tx_removed.txid)?;
             }
             msg => return Err(SlpIndexerError::UnexpectedPluginMessage(msg).into()),
         }
@@ -177,6 +221,14 @@ impl SlpIndexer {
 
     pub fn spends(&self) -> Result<SpendsReader> {
         self.db.spends()
+    }
+
+    pub fn mempool(&self) -> &MempoolData {
+        self.db.mempool(&self.data)
+    }
+
+    pub fn mempool_slp(&self) -> &MempoolSlpData {
+        self.db.mempool_slp(&self.data)
     }
 
     fn _block_txs(block: &bitcoinsuite_bitcoind_nng::Block) -> Result<Vec<UnhashedTx>> {

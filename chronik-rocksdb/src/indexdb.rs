@@ -1,4 +1,7 @@
-use std::sync::{RwLock, RwLockReadGuard};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{RwLock, RwLockReadGuard},
+};
 
 use bitcoinsuite_core::{Script, Sha256d, UnhashedTx};
 use bitcoinsuite_error::{ErrorMeta, Result};
@@ -6,9 +9,9 @@ use rocksdb::WriteBatch;
 use thiserror::Error;
 
 use crate::{
-    Block, BlockHeight, BlockReader, BlockTxs, BlockWriter, Db, OutputsConf, OutputsReader,
-    OutputsWriter, OutputsWriterCache, SlpWriter, SpendsReader, SpendsWriter, Timings, TxReader,
-    TxWriter, UtxosReader, UtxosWriter,
+    Block, BlockHeight, BlockReader, BlockTxs, BlockWriter, Db, MempoolData, MempoolDeleteMode,
+    MempoolSlpData, MempoolWriter, OutputsConf, OutputsReader, OutputsWriter, OutputsWriterCache,
+    SlpWriter, SpendsReader, SpendsWriter, Timings, TxReader, TxWriter, UtxosReader, UtxosWriter,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
@@ -25,6 +28,8 @@ pub struct IndexDb {
 
 pub struct IndexMemData {
     outputs_cache: OutputsWriterCache,
+    mempool: MempoolData,
+    mempool_slp: MempoolSlpData,
 }
 
 #[derive(Debug, Error, ErrorMeta)]
@@ -66,6 +71,14 @@ impl IndexDb {
 
     pub fn timings(&self) -> RwLockReadGuard<IndexTimings> {
         self.timings.read().unwrap()
+    }
+
+    pub fn mempool<'a>(&self, data: &'a IndexMemData) -> &'a MempoolData {
+        &data.mempool
+    }
+
+    pub fn mempool_slp<'a>(&self, data: &'a IndexMemData) -> &'a MempoolSlpData {
+        &data.mempool_slp
     }
 
     pub fn insert_block<'b>(
@@ -129,6 +142,19 @@ impl IndexDb {
         self.db.write_batch(batch)?;
         timings.timings.stop_timer("insert");
 
+        let mempool_txids = block_txs
+            .txs
+            .iter()
+            .filter_map(|entry| data.mempool.tx(&entry.txid).map(|_| &entry.txid))
+            .collect::<HashSet<_>>();
+
+        let mut mempool_writer = MempoolWriter {
+            db: &self.db,
+            mempool: &mut data.mempool,
+            mempool_slp: &mut data.mempool_slp,
+        };
+        mempool_writer.delete_mempool_mined_txs(mempool_txids)?;
+
         Ok(())
     }
 
@@ -170,12 +196,49 @@ impl IndexDb {
         self.db.write_batch(batch)?;
         Ok(())
     }
+
+    pub fn insert_mempool_tx(
+        &self,
+        data: &mut IndexMemData,
+        txid: Sha256d,
+        tx: UnhashedTx,
+        spent_scripts: Vec<Script>,
+    ) -> Result<()> {
+        self.mempool_writer(data)
+            .insert_mempool_tx(txid, tx, spent_scripts)?;
+        Ok(())
+    }
+
+    pub fn insert_mempool_batch_txs(
+        &self,
+        data: &mut IndexMemData,
+        txs: HashMap<Sha256d, (UnhashedTx, Vec<Script>)>,
+    ) -> Result<()> {
+        self.mempool_writer(data).insert_mempool_batch_txs(txs)?;
+        Ok(())
+    }
+
+    pub fn remove_mempool_tx(&self, data: &mut IndexMemData, txid: &Sha256d) -> Result<()> {
+        self.mempool_writer(data)
+            .delete_mempool_tx(txid, MempoolDeleteMode::Remove)?;
+        Ok(())
+    }
+
+    fn mempool_writer<'a>(&'a self, data: &'a mut IndexMemData) -> MempoolWriter<'a> {
+        MempoolWriter {
+            db: &self.db,
+            mempool: &mut data.mempool,
+            mempool_slp: &mut data.mempool_slp,
+        }
+    }
 }
 
 impl IndexMemData {
     pub fn new(outputs_capacity: usize) -> Self {
         IndexMemData {
             outputs_cache: OutputsWriterCache::with_capacity(outputs_capacity),
+            mempool: MempoolData::default(),
+            mempool_slp: MempoolSlpData::default(),
         }
     }
 }

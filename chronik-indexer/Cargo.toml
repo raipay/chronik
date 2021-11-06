@@ -24,3 +24,5 @@ pretty_assertions = "1.0"
 
 # For ipc named pipes
 tempdir = "0.3"
+
+bitcoinsuite-test-utils-blockchain = { path = "../../bitcoinsuite/bitcoinsuite-test-utils-blockchain" }
