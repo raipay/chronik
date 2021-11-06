@@ -44,6 +44,7 @@ pub struct Block {
     pub n_bits: u32,
     pub timestamp: i64,
     pub file_num: u32,
+    pub data_pos: u32,
 }
 
 #[derive(Debug, Clone, FromBytes, AsBytes, Unaligned)]
@@ -53,6 +54,7 @@ struct BlockData {
     pub n_bits: U32<LE>,
     pub timestamp: I64<LE>,
     pub file_num: U32<LE>,
+    pub data_pos: U32<LE>,
 }
 
 struct BlockIndexable;
@@ -84,6 +86,7 @@ impl<'a> BlockWriter<'a> {
             n_bits: U32::new(block.n_bits),
             timestamp: I64::new(block.timestamp),
             file_num: U32::new(block.file_num),
+            data_pos: U32::new(block.data_pos),
         };
         let block_height = BlockHeightOrd(block.height.into());
         batch.put_cf(self.cf, block_height.as_bytes(), block_data.as_bytes());
@@ -159,6 +162,7 @@ impl<'a> BlockReader<'a> {
                     n_bits: block_data.n_bits.get(),
                     timestamp: block_data.timestamp.get(),
                     file_num: block_data.file_num.get(),
+                    data_pos: block_data.data_pos.get(),
                 }))
             }
             None => Ok(None),
@@ -181,6 +185,7 @@ impl<'a> BlockReader<'a> {
             n_bits: block_data.n_bits.get(),
             timestamp: block_data.timestamp.get(),
             file_num: block_data.file_num.get(),
+            data_pos: block_data.data_pos.get(),
         }))
     }
 
@@ -201,6 +206,7 @@ impl<'a> BlockReader<'a> {
             n_bits: block_data.n_bits.get(),
             timestamp: block_data.timestamp.get(),
             file_num: block_data.file_num.get(),
+            data_pos: block_data.data_pos.get(),
         }))
     }
 
@@ -270,6 +276,7 @@ mod test {
             n_bits: 0x1c100000,
             timestamp: 1600000000,
             file_num: 6,
+            data_pos: 100,
         };
         let block1 = Block {
             hash: Sha256d::new([22; 32]),
@@ -278,6 +285,7 @@ mod test {
             n_bits: 0x1c100001,
             timestamp: 1600000001,
             file_num: 7,
+            data_pos: 200,
         };
         assert_eq!(reader.by_height(0)?, None);
         assert_eq!(reader.height()?, -1);

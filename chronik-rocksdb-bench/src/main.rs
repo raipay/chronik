@@ -185,6 +185,7 @@ fn main() -> Result<()> {
             n_bits: block.header.bits,
             timestamp: block.header.timestamp.into(),
             file_num: 0,
+            data_pos: 0,
         };
         let block_txs = BlockTxs {
             txs: block

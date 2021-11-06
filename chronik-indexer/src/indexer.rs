@@ -239,6 +239,7 @@ impl SlpIndexer {
             n_bits: block.header.n_bits,
             timestamp: block.header.timestamp.try_into().unwrap(),
             file_num: block.file_num,
+            data_pos: block.data_pos,
         };
         let num_txs = block.txs.len();
         let db_txs = block
