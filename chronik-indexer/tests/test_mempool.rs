@@ -65,13 +65,18 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
     slp_indexer.leave_catchup()?;
 
     let utxo_entries = slp_indexer
+        .db()
         .utxos()?
         .utxos(PayloadPrefix::P2SH, anyone_hash.as_slice())?;
     assert_eq!(utxo_entries.len(), 10);
 
     let mut utxos = Vec::new();
     for utxo_entry in utxo_entries {
-        let tx_entry = slp_indexer.txs()?.by_tx_num(utxo_entry.tx_num)?.unwrap();
+        let tx_entry = slp_indexer
+            .db()
+            .txs()?
+            .by_tx_num(utxo_entry.tx_num)?
+            .unwrap();
         utxos.push((
             OutPoint {
                 txid: tx_entry.entry.txid,
@@ -101,11 +106,11 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
     let txid1 = Sha256d::from_hex_be(&txid_hex)?;
     slp_indexer.process_next_msg()?;
     assert_eq!(
-        slp_indexer.mempool().tx(&txid1),
+        slp_indexer.db_mempool().tx(&txid1),
         Some(&(tx1.clone(), vec![anyone_script.to_p2sh()])),
     );
-    assert_eq!(slp_indexer.mempool_slp().slp_tx_data(&txid1), None);
-    assert_eq!(slp_indexer.mempool_slp().slp_tx_error(&txid1), None);
+    assert_eq!(slp_indexer.db_mempool_slp().slp_tx_data(&txid1), None);
+    assert_eq!(slp_indexer.db_mempool_slp().slp_tx_error(&txid1), None);
 
     let (outpoint, _) = utxos.pop().unwrap();
     let tx2 = build_tx(
@@ -132,11 +137,11 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
     let token_id = TokenId::new(txid2.clone());
     slp_indexer.process_next_msg()?;
     assert_eq!(
-        slp_indexer.mempool().tx(&txid2),
+        slp_indexer.db_mempool().tx(&txid2),
         Some(&(tx2.clone(), vec![anyone_script.to_p2sh()])),
     );
     assert_eq!(
-        slp_indexer.mempool_slp().slp_tx_data(&txid2),
+        slp_indexer.db_mempool_slp().slp_tx_data(&txid2),
         Some(&SlpValidTxData {
             slp_tx_data: SlpTxData {
                 input_tokens: vec![SlpToken::EMPTY],
@@ -149,7 +154,7 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
             slp_burns: vec![None],
         })
     );
-    assert_eq!(slp_indexer.mempool_slp().slp_tx_error(&txid2), None);
+    assert_eq!(slp_indexer.db_mempool_slp().slp_tx_error(&txid2), None);
 
     let (outpoint, value) = utxos.pop().unwrap();
     let send_value = leftover_value * 2 + value - 20_000;
@@ -194,11 +199,11 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
     let txid3 = Sha256d::from_hex_be(&txid_hex)?;
     slp_indexer.process_next_msg()?;
     assert_eq!(
-        slp_indexer.mempool().tx(&txid3),
+        slp_indexer.db_mempool().tx(&txid3),
         Some(&(tx3.clone(), vec![anyone_script.to_p2sh(); 3])),
     );
     assert_eq!(
-        slp_indexer.mempool_slp().slp_tx_data(&txid3),
+        slp_indexer.db_mempool_slp().slp_tx_data(&txid3),
         Some(&SlpValidTxData {
             slp_tx_data: SlpTxData {
                 input_tokens: vec![SlpToken::EMPTY, SlpToken::EMPTY, SlpToken::amount(100)],
@@ -211,9 +216,9 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
             slp_burns: vec![None, None, None],
         })
     );
-    assert_eq!(slp_indexer.mempool_slp().slp_tx_error(&txid3), None);
+    assert_eq!(slp_indexer.db_mempool_slp().slp_tx_error(&txid3), None);
 
-    let tip = slp_indexer.blocks()?.tip()?.unwrap();
+    let tip = slp_indexer.db().blocks()?.tip()?.unwrap();
     let tx1 = tx1.hashed();
     let block = build_lotus_block(
         tip.hash.clone(),
@@ -228,26 +233,26 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
     assert_eq!(result, "");
 
     slp_indexer.process_next_msg()?;
-    let block_tx = slp_indexer.txs()?.by_txid(&txid1)?.unwrap();
+    let block_tx = slp_indexer.db().txs()?.by_txid(&txid1)?.unwrap();
     assert_eq!(block_tx.entry.txid, txid1);
     assert_eq!(block_tx.entry.tx_size, tx1.raw().len() as u32);
     assert_eq!(block_tx.block_height, 111);
-    assert_eq!(slp_indexer.mempool().tx(&txid1), None);
+    assert_eq!(slp_indexer.db_mempool().tx(&txid1), None);
     assert_eq!(
-        slp_indexer.mempool().tx(&txid2),
+        slp_indexer.db_mempool().tx(&txid2),
         Some(&(tx2.clone(), vec![anyone_script.to_p2sh()])),
     );
-    assert!(slp_indexer.mempool_slp().slp_tx_data(&txid2).is_some());
+    assert!(slp_indexer.db_mempool_slp().slp_tx_data(&txid2).is_some());
     assert_eq!(
-        slp_indexer.mempool().tx(&txid3),
+        slp_indexer.db_mempool().tx(&txid3),
         Some(&(tx3.clone(), vec![anyone_script.to_p2sh(); 3])),
     );
-    assert!(slp_indexer.mempool_slp().slp_tx_data(&txid3).is_some());
+    assert!(slp_indexer.db_mempool_slp().slp_tx_data(&txid3).is_some());
 
     // modify tx3
     tx3.outputs[1].value -= 1;
 
-    let tip = slp_indexer.blocks()?.tip()?.unwrap();
+    let tip = slp_indexer.db().blocks()?.tip()?.unwrap();
     let tx2 = tx2.hashed();
     let tx3 = tx3.hashed();
     let block = build_lotus_block(
@@ -265,20 +270,20 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
     slp_indexer.process_next_msg()?;
     slp_indexer.process_next_msg()?;
 
-    assert_eq!(slp_indexer.mempool().tx(&txid1), None);
-    assert_eq!(slp_indexer.mempool().tx(&txid2), None);
-    assert_eq!(slp_indexer.mempool().tx(&txid3), None);
+    assert_eq!(slp_indexer.db_mempool().tx(&txid1), None);
+    assert_eq!(slp_indexer.db_mempool().tx(&txid2), None);
+    assert_eq!(slp_indexer.db_mempool().tx(&txid3), None);
 
-    let block_tx = slp_indexer.txs()?.by_txid(&txid2)?.unwrap();
+    let block_tx = slp_indexer.db().txs()?.by_txid(&txid2)?.unwrap();
     assert_eq!(block_tx.entry.txid, txid2);
     assert_eq!(block_tx.entry.tx_size, tx2.raw().len() as u32);
     assert_eq!(block_tx.block_height, 112);
 
-    assert_eq!(slp_indexer.txs()?.by_txid(&txid3)?, None);
+    assert_eq!(slp_indexer.db().txs()?.by_txid(&txid3)?, None);
 
     let txid3_modified = lotus_txid(tx3.unhashed_tx());
     assert_ne!(txid3, txid3_modified);
-    let block_tx = slp_indexer.txs()?.by_txid(&txid3_modified)?.unwrap();
+    let block_tx = slp_indexer.db().txs()?.by_txid(&txid3_modified)?.unwrap();
     assert_eq!(block_tx.entry.txid, txid3_modified);
     assert_eq!(block_tx.entry.tx_size, tx3.raw().len() as u32);
     assert_eq!(block_tx.block_height, 112);

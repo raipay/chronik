@@ -7,8 +7,7 @@ use bitcoinsuite_error::{ErrorMeta, Result};
 use thiserror::Error;
 
 use chronik_rocksdb::{
-    Block, BlockReader, BlockTxs, IndexDb, IndexMemData, MempoolData, MempoolSlpData,
-    OutputsReader, SpendsReader, TxEntry, TxReader, UtxosReader,
+    Block, BlockTxs, IndexDb, IndexMemData, MempoolData, MempoolSlpData, TxEntry,
 };
 
 pub struct SlpIndexer {
@@ -203,31 +202,15 @@ impl SlpIndexer {
         Ok(())
     }
 
-    pub fn blocks(&self) -> Result<BlockReader> {
-        self.db.blocks()
+    pub fn db(&self) -> &IndexDb {
+        &self.db
     }
 
-    pub fn txs(&self) -> Result<TxReader> {
-        self.db.txs()
-    }
-
-    pub fn outputs(&self) -> Result<OutputsReader> {
-        self.db.outputs()
-    }
-
-    pub fn utxos(&self) -> Result<UtxosReader> {
-        self.db.utxos()
-    }
-
-    pub fn spends(&self) -> Result<SpendsReader> {
-        self.db.spends()
-    }
-
-    pub fn mempool(&self) -> &MempoolData {
+    pub fn db_mempool(&self) -> &MempoolData {
         self.db.mempool(&self.data)
     }
 
-    pub fn mempool_slp(&self) -> &MempoolSlpData {
+    pub fn db_mempool_slp(&self) -> &MempoolSlpData {
         self.db.mempool_slp(&self.data)
     }
 
