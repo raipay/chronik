@@ -1,10 +1,9 @@
-use std::{cmp::Ordering, collections::HashMap};
+use std::cmp::Ordering;
 
-use bitcoinsuite_core::{OutPoint, Sha256d, UnhashedTx};
-use bitcoinsuite_error::{ErrorMeta, Result};
+use bitcoinsuite_core::UnhashedTx;
+use bitcoinsuite_error::Result;
 use byteorder::BE;
 use rocksdb::{ColumnFamilyDescriptor, Options, WriteBatch};
-use thiserror::Error;
 use zerocopy::{AsBytes, FromBytes, Unaligned, U32};
 
 use crate::{
@@ -12,7 +11,7 @@ use crate::{
     merge_ops::{
         full_merge_ordered_list, partial_merge_ordered_list, PREFIX_DELETE, PREFIX_INSERT,
     },
-    Db, TxNum, TxNumZC, TxReader, CF,
+    Db, TxNum, TxNumZC, CF,
 };
 
 pub const CF_SPENDS: &str = "spends";
@@ -38,7 +37,6 @@ pub struct SpendEntry {
 }
 
 pub struct SpendsWriter<'a> {
-    db: &'a Db,
     cf_spends: &'a CF,
 }
 
@@ -46,15 +44,6 @@ pub struct SpendsReader<'a> {
     db: &'a Db,
     cf_spends: &'a CF,
 }
-
-#[derive(Debug, Error, ErrorMeta)]
-pub enum SpendsError {
-    #[critical()]
-    #[error("Unknown input spent: {0:?}")]
-    UnknownInputSpent(OutPoint),
-}
-
-use self::SpendsError::*;
 
 impl<'a> SpendsWriter<'a> {
     pub fn add_cfs(columns: &mut Vec<ColumnFamilyDescriptor>) {
@@ -69,52 +58,45 @@ impl<'a> SpendsWriter<'a> {
 
     pub fn new(db: &'a Db) -> Result<Self> {
         let cf_spends = db.cf(CF_SPENDS)?;
-        Ok(SpendsWriter { db, cf_spends })
+        Ok(SpendsWriter { cf_spends })
     }
 
-    pub fn insert_block_txs<'b>(
+    pub fn insert_block_txs(
         &self,
         batch: &mut WriteBatch,
         first_tx_num: TxNum,
-        txids_fn: impl Fn(usize) -> &'b Sha256d,
         txs: &[UnhashedTx],
+        input_tx_nums: &[Vec<u64>],
     ) -> Result<()> {
-        self.update_block_txs(batch, first_tx_num, txids_fn, txs, PREFIX_INSERT)
+        self.update_block_txs(batch, first_tx_num, txs, input_tx_nums, PREFIX_INSERT)
     }
 
-    pub fn delete_block_txs<'b>(
+    pub fn delete_block_txs(
         &self,
         batch: &mut WriteBatch,
         first_tx_num: TxNum,
-        txids_fn: impl Fn(usize) -> &'b Sha256d,
         txs: &[UnhashedTx],
+        input_tx_nums: &[Vec<u64>],
     ) -> Result<()> {
-        self.update_block_txs(batch, first_tx_num, txids_fn, txs, PREFIX_DELETE)
+        self.update_block_txs(batch, first_tx_num, txs, input_tx_nums, PREFIX_DELETE)
     }
 
-    fn update_block_txs<'b>(
+    fn update_block_txs(
         &self,
         batch: &mut WriteBatch,
         first_tx_num: TxNum,
-        txids_fn: impl Fn(usize) -> &'b Sha256d,
         txs: &[UnhashedTx],
+        input_tx_nums: &[Vec<u64>],
         prefix: u8,
     ) -> Result<()> {
-        let mut new_tx_nums = HashMap::new();
-        for tx_idx in 0..txs.len() {
-            let txid = txids_fn(tx_idx);
-            new_tx_nums.insert(txid.clone(), first_tx_num + tx_idx as TxNum);
-        }
-        let tx_reader = TxReader::new(self.db)?;
-        for (tx_idx, tx) in txs.iter().enumerate().skip(1) {
+        for ((tx_idx, tx), tx_input_nums) in txs.iter().enumerate().skip(1).zip(input_tx_nums) {
             let tx_num = first_tx_num + tx_idx as TxNum;
-            for (input_idx, input) in tx.inputs.iter().enumerate() {
-                let spent_tx_num = match new_tx_nums.get(&input.prev_out.txid) {
-                    Some(&tx_num) => tx_num,
-                    None => tx_reader
-                        .tx_num_by_txid(&input.prev_out.txid)?
-                        .ok_or_else(|| UnknownInputSpent(input.prev_out.clone()))?,
-                };
+            for (input_idx, (input, input_tx_num)) in tx
+                .inputs
+                .iter()
+                .zip(tx_input_nums.iter().cloned())
+                .enumerate()
+            {
                 let spend = SpendData {
                     out_idx: input.prev_out.out_idx.into(),
                     tx_num: tx_num.into(),
@@ -122,7 +104,7 @@ impl<'a> SpendsWriter<'a> {
                 };
                 let mut value = spend.as_bytes().to_vec();
                 value.insert(0, prefix);
-                batch.merge_cf(self.cf_spends, TxNumZC::new(spent_tx_num).as_bytes(), value);
+                batch.merge_cf(self.cf_spends, TxNumZC::new(input_tx_num).as_bytes(), value);
             }
         }
         Ok(())
@@ -174,8 +156,8 @@ impl PartialOrd for SpendData {
 #[cfg(test)]
 mod test {
     use crate::{
-        spends::SpendData, BlockHeight, BlockTxs, Db, SpendEntry, SpendsReader, SpendsWriter,
-        TxEntry, TxNum, TxNumZC, TxWriter,
+        input_tx_nums::fetch_input_tx_nums, spends::SpendData, BlockHeight, BlockTxs, Db,
+        SpendEntry, SpendsReader, SpendsWriter, TxEntry, TxNum, TxNumZC, TxWriter,
     };
     use bitcoinsuite_core::{OutPoint, Sha256d, TxInput, UnhashedTx};
     use bitcoinsuite_error::Result;
@@ -231,11 +213,17 @@ mod test {
         }
         let connect_block = |block_height: usize| -> Result<()> {
             let mut batch = WriteBatch::default();
-            spends_writer.insert_block_txs(
-                &mut batch,
+            let input_tx_nums = fetch_input_tx_nums(
+                &db,
                 blocks[block_height].0,
                 |idx| &blocks[block_height].1[idx],
                 &blocks[block_height].2,
+            )?;
+            spends_writer.insert_block_txs(
+                &mut batch,
+                blocks[block_height].0,
+                &blocks[block_height].2,
+                &input_tx_nums,
             )?;
             tx_writer.insert_block_txs(
                 &mut batch,
@@ -249,11 +237,17 @@ mod test {
         };
         let disconnect_block = |block_height: usize| -> Result<()> {
             let mut batch = WriteBatch::default();
-            spends_writer.delete_block_txs(
-                &mut batch,
+            let input_tx_nums = fetch_input_tx_nums(
+                &db,
                 blocks[block_height].0,
                 |idx| &blocks[block_height].1[idx],
                 &blocks[block_height].2,
+            )?;
+            spends_writer.delete_block_txs(
+                &mut batch,
+                blocks[block_height].0,
+                &blocks[block_height].2,
+                &input_tx_nums,
             )?;
             tx_writer.delete_block_txs(&mut batch, block_height as BlockHeight)?;
             db.write_batch(batch)?;

@@ -2,9 +2,7 @@ use std::collections::{hash_map::Entry, HashMap};
 
 use bitcoinsuite_core::{OutPoint, Script, Sha256d, UnhashedTx};
 use bitcoinsuite_error::{ErrorMeta, Result};
-use rayon::iter::{
-    IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
-};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use rocksdb::{ColumnFamilyDescriptor, Options, WriteBatch};
 use thiserror::Error;
 use zerocopy::{AsBytes, U32};
@@ -70,6 +68,7 @@ impl<'a> UtxosWriter<'a> {
         txids_fn: impl Fn(usize) -> &'b Sha256d,
         txs: &[UnhashedTx],
         block_spent_script_fn: impl Fn(/*tx_num:*/ usize, /*out_idx:*/ usize) -> &'b Script,
+        input_tx_nums: &[Vec<u64>],
     ) -> Result<Timings> {
         let mut tx_num = first_tx_num;
         let mut new_tx_nums = HashMap::new();
@@ -115,30 +114,14 @@ impl<'a> UtxosWriter<'a> {
             .collect::<Result<HashMap<_, _>>>()?;
         timings.stop_timer("insert");
         timings.start_timer();
-        let tx_reader = TxReader::new(self.db)?;
-        // tx_nums for each spent input
-        let input_tx_nums = txs
-            .par_iter()
-            .skip(1)
-            .map(|tx| {
-                tx.inputs
-                    .iter()
-                    .map(|input| {
-                        Ok(match new_tx_nums.get(&input.prev_out.txid) {
-                            Some(&tx_num) => tx_num,
-                            None => tx_reader
-                                .tx_num_by_txid(&input.prev_out.txid)?
-                                .ok_or_else(|| UnknownInputSpent(input.prev_out.clone()))?,
-                        })
-                    })
-                    .collect::<Result<Vec<_>>>()
-            })
-            .collect::<Result<Vec<_>>>()?;
         // All destroyed outpoints (tx_num, out_idx) by script
         let mut input_outpoints = HashMap::new();
         for (tx_pos, (tx, input_tx_nums)) in txs.iter().skip(1).zip(input_tx_nums).enumerate() {
-            for (input_idx, (input, spent_tx_num)) in
-                tx.inputs.iter().zip(input_tx_nums).enumerate()
+            for (input_idx, (input, spent_tx_num)) in tx
+                .inputs
+                .iter()
+                .zip(input_tx_nums.iter().cloned())
+                .enumerate()
             {
                 let spent_script = block_spent_script_fn(tx_pos, input_idx);
                 for (payload_prefix, mut script_payload) in script_payloads(spent_script) {
@@ -329,8 +312,8 @@ fn update_map_or_db_entry<'a>(
 #[cfg(test)]
 mod test {
     use crate::{
-        outpoint_data::OutpointData, BlockHeight, BlockTxs, Db, OutpointEntry, PayloadPrefix,
-        TxEntry, TxNum, TxWriter, UtxosReader, UtxosWriter,
+        input_tx_nums::fetch_input_tx_nums, outpoint_data::OutpointData, BlockHeight, BlockTxs, Db,
+        OutpointEntry, PayloadPrefix, TxEntry, TxNum, TxWriter, UtxosReader, UtxosWriter,
     };
     use bitcoinsuite_core::{
         ecc::PubKey, OutPoint, Script, Sha256d, ShaRmd160, TxInput, TxOutput, UnhashedTx,
@@ -434,12 +417,19 @@ mod test {
         }
         let connect_block = |block_height: usize| -> Result<()> {
             let mut batch = WriteBatch::default();
+            let input_tx_nums = fetch_input_tx_nums(
+                &db,
+                blocks[block_height].0,
+                |idx| &blocks[block_height].1[idx],
+                &blocks[block_height].2,
+            )?;
             utxo_writer.insert_block_txs(
                 &mut batch,
                 blocks[block_height].0,
                 |idx| &blocks[block_height].1[idx],
                 &blocks[block_height].2,
                 |tx_pos, input_idx| blocks[block_height].3[tx_pos][input_idx],
+                &input_tx_nums,
             )?;
             tx_writer.insert_block_txs(
                 &mut batch,

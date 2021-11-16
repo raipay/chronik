@@ -9,9 +9,10 @@ use rocksdb::WriteBatch;
 use thiserror::Error;
 
 use crate::{
-    Block, BlockHeight, BlockReader, BlockTxs, BlockWriter, Db, MempoolData, MempoolDeleteMode,
-    MempoolSlpData, MempoolWriter, OutputsConf, OutputsReader, OutputsWriter, OutputsWriterCache,
-    SlpWriter, SpendsReader, SpendsWriter, Timings, TxReader, TxWriter, UtxosReader, UtxosWriter,
+    input_tx_nums::fetch_input_tx_nums, Block, BlockHeight, BlockReader, BlockTxs, BlockWriter, Db,
+    MempoolData, MempoolDeleteMode, MempoolSlpData, MempoolWriter, OutputsConf, OutputsReader,
+    OutputsWriter, OutputsWriterCache, SlpWriter, SpendsReader, SpendsWriter, Timings, TxReader,
+    TxWriter, UtxosReader, UtxosWriter,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
@@ -110,6 +111,10 @@ impl IndexDb {
         timings.timings.stop_timer("txs");
 
         timings.timings.start_timer();
+        let input_tx_nums = fetch_input_tx_nums(&self.db, first_tx_num, txids_fn, txs)?;
+        timings.timings.stop_timer("fetch_input_tx_nums");
+
+        timings.timings.start_timer();
         let outputs_timings = output_writer.insert_block_txs(
             &mut batch,
             first_tx_num,
@@ -125,13 +130,14 @@ impl IndexDb {
             first_tx_num,
             &txids_fn,
             txs,
-            block_spent_script_fn,
+            &block_spent_script_fn,
+            &input_tx_nums,
         )?;
         timings.timings.stop_timer("utxos");
         timings.utxos_timings.add(&utxos_timings);
 
         timings.timings.start_timer();
-        spends_writer.insert_block_txs(&mut batch, first_tx_num, txids_fn, txs)?;
+        spends_writer.insert_block_txs(&mut batch, first_tx_num, txs, &input_tx_nums)?;
         timings.timings.stop_timer("spends");
 
         timings.timings.start_timer();
@@ -176,6 +182,7 @@ impl IndexDb {
         let slp_writer = SlpWriter::new(&self.db)?;
         let tx_reader = TxReader::new(&self.db)?;
         let first_tx_num = tx_reader.first_tx_num_by_block(height)?.unwrap();
+        let input_tx_nums = fetch_input_tx_nums(&self.db, first_tx_num, &txids_fn, txs)?;
         let mut batch = WriteBatch::default();
         block_writer.delete_by_hash(&mut batch, block_hash)?;
         let block = self
@@ -191,7 +198,7 @@ impl IndexDb {
             txs,
             block_spent_script_fn,
         )?;
-        spends_writer.delete_block_txs(&mut batch, first_tx_num, &txids_fn, txs)?;
+        spends_writer.delete_block_txs(&mut batch, first_tx_num, txs, &input_tx_nums)?;
         slp_writer.delete_block_txs(&mut batch, first_tx_num, txs, &txids_fn)?;
         self.db.write_batch(batch)?;
         Ok(())

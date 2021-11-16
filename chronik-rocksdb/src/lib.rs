@@ -3,6 +3,7 @@ mod data;
 mod db;
 mod index;
 mod indexdb;
+mod input_tx_nums;
 mod mempool;
 mod mempool_data;
 mod mempool_slp_data;
