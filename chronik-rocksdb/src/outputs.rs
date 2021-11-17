@@ -1,19 +1,18 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
-use bitcoinsuite_core::UnhashedTx;
+use bitcoinsuite_core::{Script, UnhashedTx};
 use bitcoinsuite_error::Result;
 use lru::LruCache;
 use rocksdb::{ColumnFamilyDescriptor, Direction, IteratorMode, Options, WriteBatch};
-use zerocopy::{AsBytes, U32};
+use zerocopy::AsBytes;
 
 use crate::{
     data::interpret_slice,
     merge_ops::{
         full_merge_ordered_list, partial_merge_ordered_list, PREFIX_DELETE, PREFIX_INSERT,
     },
-    outpoint_data::{OutpointData, OutpointEntry},
     script_payload::{script_payloads, PayloadPrefix},
-    Db, Timings, TxNum, CF,
+    Db, Timings, TxNum, TxNumOrd, TxNumZC, CF,
 };
 
 pub const CF_OUTPUTS: &str = "outputs";
@@ -47,8 +46,8 @@ impl<'a> OutputsWriter<'a> {
         let mut options = Options::default();
         options.set_merge_operator(
             "slp-indexer-rocks.MergeOutputs",
-            full_merge_ordered_list::<OutpointData>,
-            partial_merge_ordered_list::<OutpointData>,
+            full_merge_ordered_list::<TxNumOrd>,
+            partial_merge_ordered_list::<TxNumOrd>,
         );
         columns.push(ColumnFamilyDescriptor::new(CF_OUTPUTS, options));
     }
@@ -62,97 +61,62 @@ impl<'a> OutputsWriter<'a> {
         })
     }
 
-    pub fn insert_block_txs(
+    pub fn insert_block_txs<'b>(
         &self,
         batch: &mut WriteBatch,
         first_tx_num: TxNum,
         txs: &[UnhashedTx],
+        block_spent_script_fn: impl Fn(/*tx_idx:*/ usize, /*out_idx:*/ usize) -> &'b Script,
         outputs_cache: &mut OutputsWriterCache,
     ) -> Result<Timings> {
-        let mut tx_num = first_tx_num;
-        let mut num_outputs_by_payload = HashMap::new();
-        let mut timings = Timings::default();
-        for tx in txs {
-            for (out_idx, output) in tx.outputs.iter().enumerate() {
-                for (payload_prefix, mut script_payload) in script_payloads(&output.script) {
-                    timings.start_timer();
-                    script_payload.insert(0, payload_prefix as u8);
-                    let num_txs_map = num_outputs_by_payload
-                        .entry(script_payload.clone())
-                        .or_insert(0);
-                    let num_txs = match outputs_cache.get_num_outputs_by_payload(
-                        self.db,
-                        self.cf_outputs,
-                        &self.conf,
-                        &script_payload,
-                    )? {
-                        Ok(num_txs) => num_txs,
-                        Err(num_txs_db) => num_txs_db + *num_txs_map,
-                    };
-                    timings.stop_timer("get_num_outputs");
-
-                    timings.start_timer();
-                    let page_num = num_txs / self.conf.page_size as u32;
-                    let key = key_for_script_payload(&script_payload, page_num);
-                    let script_entry = OutpointData {
-                        tx_num: tx_num.into(),
-                        out_idx: U32::new(out_idx as u32),
-                    };
-                    let mut value = script_entry.as_bytes().to_vec();
-                    value.insert(0, PREFIX_INSERT);
-                    timings.stop_timer("prepare_value");
-
-                    timings.start_timer();
-                    batch.merge_cf(self.cf_outputs, key, value);
-                    timings.stop_timer("merge_into_batch");
-
-                    *num_txs_map += 1;
-                    outputs_cache.increment_num_outputs(&script_payload);
-                }
+        let timings = Timings::default();
+        let payload_tx_nums = prepare_tx_nums_by_payload(first_tx_num, txs, block_spent_script_fn);
+        for (script_payload, tx_nums) in payload_tx_nums {
+            let start_num_txs = outputs_cache.get_num_outputs_by_payload(
+                self.db,
+                self.cf_outputs,
+                &self.conf,
+                &script_payload,
+            )?;
+            for (new_tx_idx, tx_num) in tx_nums.iter().cloned().enumerate() {
+                let num_txs = start_num_txs + new_tx_idx as u32;
+                let page_num = num_txs / self.conf.page_size as u32;
+                let key = key_for_script_payload(&script_payload, page_num);
+                let mut value = TxNumZC::new(tx_num).as_bytes().to_vec();
+                value.insert(0, PREFIX_INSERT);
+                batch.merge_cf(self.cf_outputs, key, value);
             }
-            tx_num += 1;
+            outputs_cache.increment_num_outputs(&script_payload, tx_nums.len() as u32);
         }
         Ok(timings)
     }
 
-    pub fn delete_block_txs(
+    pub fn delete_block_txs<'b>(
         &self,
         batch: &mut WriteBatch,
         first_tx_num: TxNum,
         txs: &[UnhashedTx],
+        block_spent_script_fn: impl Fn(/*tx_idx:*/ usize, /*out_idx:*/ usize) -> &'b Script,
         outputs_cache: &mut OutputsWriterCache,
     ) -> Result<()> {
-        let mut num_outputs_by_payload = HashMap::new();
-        for (tx_idx, tx) in txs.iter().enumerate().rev() {
-            let tx_num = first_tx_num + tx_idx as TxNum;
-            for (out_idx, output) in tx.outputs.iter().enumerate().rev() {
-                for (payload_prefix, mut script_payload) in script_payloads(&output.script) {
-                    script_payload.insert(0, payload_prefix as u8);
-                    let num_outputs_map = num_outputs_by_payload
-                        .entry(script_payload.clone())
-                        .or_insert(0);
-                    let output_idx = match outputs_cache.get_num_outputs_by_payload(
-                        self.db,
-                        self.cf_outputs,
-                        &self.conf,
-                        &script_payload,
-                    )? {
-                        Ok(num_outputs) => num_outputs - 1,
-                        Err(num_outputs_db) => num_outputs_db - *num_outputs_map - 1,
-                    };
-                    let page_num = output_idx / self.conf.page_size as u32;
-                    let key = key_for_script_payload(&script_payload, page_num);
-                    let script_entry = OutpointData {
-                        tx_num: tx_num.into(),
-                        out_idx: U32::new(out_idx as u32),
-                    };
-                    let mut value = script_entry.as_bytes().to_vec();
-                    value.insert(0, PREFIX_DELETE);
-                    batch.merge_cf(self.cf_outputs, key, value);
-                    *num_outputs_map += 1;
-                    outputs_cache.decrement_num_outputs(&script_payload);
-                }
+        let payload_tx_nums = prepare_tx_nums_by_payload(first_tx_num, txs, block_spent_script_fn);
+        for (script_payload, tx_nums) in payload_tx_nums {
+            let start_num_txs = outputs_cache.get_num_outputs_by_payload(
+                self.db,
+                self.cf_outputs,
+                &self.conf,
+                &script_payload,
+            )?;
+            let start_num_txs = start_num_txs - tx_nums.len() as u32;
+            for (new_tx_idx, tx_num) in tx_nums.iter().cloned().enumerate() {
+                let num_txs = start_num_txs + new_tx_idx as u32;
+                let page_num = num_txs / self.conf.page_size as u32;
+                let key = key_for_script_payload(&script_payload, page_num);
+                let mut value = TxNumZC::new(tx_num).as_bytes().to_vec();
+                value.insert(0, PREFIX_DELETE);
+                batch.merge_cf(self.cf_outputs, key, value);
             }
+            outputs_cache.decrement_num_outputs(&script_payload, tx_nums.len() as u32);
         }
         Ok(())
     }
@@ -160,6 +124,38 @@ impl<'a> OutputsWriter<'a> {
 
 fn key_for_script_payload(script_payload: &[u8], page_num: u32) -> Vec<u8> {
     [script_payload, page_num.to_be_bytes().as_ref()].concat()
+}
+
+fn prepare_tx_nums_by_payload<'b>(
+    first_tx_num: TxNum,
+    txs: &[UnhashedTx],
+    block_spent_script_fn: impl Fn(/*tx_idx:*/ usize, /*out_idx:*/ usize) -> &'b Script,
+) -> HashMap<Vec<u8>, BTreeSet<TxNum>> {
+    let mut payload_tx_nums = HashMap::<_, BTreeSet<TxNum>>::new();
+    for (tx_idx, tx) in txs.iter().enumerate() {
+        let tx_num = first_tx_num + tx_idx as u64;
+        for output in &tx.outputs {
+            for (payload_prefix, mut script_payload) in script_payloads(&output.script) {
+                script_payload.insert(0, payload_prefix as u8);
+                let tx_nums = payload_tx_nums.entry(script_payload).or_default();
+                tx_nums.insert(tx_num);
+            }
+        }
+        if tx_idx == 0 {
+            // skip coinbase
+            continue;
+        }
+        let tx_pos = tx_idx - 1;
+        for input_idx in 0..tx.inputs.len() {
+            let spent_script = block_spent_script_fn(tx_pos, input_idx);
+            for (payload_prefix, mut script_payload) in script_payloads(spent_script) {
+                script_payload.insert(0, payload_prefix as u8);
+                let tx_nums = payload_tx_nums.entry(script_payload).or_default();
+                tx_nums.insert(tx_num);
+            }
+        }
+    }
+    payload_tx_nums
 }
 
 impl<'a> OutputsReader<'a> {
@@ -192,19 +188,16 @@ impl<'a> OutputsReader<'a> {
         page_num: ScriptPageNum,
         prefix: PayloadPrefix,
         payload_data: &[u8],
-    ) -> Result<Vec<OutpointEntry>> {
+    ) -> Result<Vec<TxNum>> {
         let script_payload = [[prefix as u8].as_ref(), payload_data].concat();
         let key = key_for_script_payload(&script_payload, page_num);
         let value = match self.db.get(self.cf_outputs, &key)? {
             Some(value) => value,
             None => return Ok(vec![]),
         };
-        let entries = interpret_slice::<OutpointData>(&value)?
+        let entries = interpret_slice::<TxNumZC>(&value)?
             .iter()
-            .map(|entry| OutpointEntry {
-                tx_num: entry.tx_num.get(),
-                out_idx: entry.out_idx.get(),
-            })
+            .map(|tx_num| tx_num.get())
             .collect();
         Ok(entries)
     }
@@ -224,10 +217,10 @@ impl OutputsWriterCache {
         cf: &CF,
         conf: &OutputsConf,
         payload: &[u8],
-    ) -> Result<std::result::Result<u32, u32>> {
+    ) -> Result<u32> {
         if self.capacity > 0 {
             if let Some(&num_outputs) = self.num_outputs_by_script.get(payload) {
-                return Ok(Ok(num_outputs));
+                return Ok(num_outputs);
             }
         }
         let last_key = key_for_script_payload(payload, std::u32::MAX);
@@ -245,30 +238,30 @@ impl OutputsWriterCache {
                     if self.capacity > 0 {
                         self.num_outputs_by_script.put(payload.to_vec(), 0);
                     }
-                    return Ok(Err(0));
+                    return Ok(0);
                 }
             };
         };
-        let entries = interpret_slice::<OutpointData>(&value)?;
+        let tx_nums = interpret_slice::<TxNumZC>(&value)?;
         let page_num =
             ScriptPageNum::from_be_bytes(key[key.len() - PAGE_NUM_SIZE..].try_into().unwrap());
-        let num_outputs = (page_num * conf.page_size as u32) + entries.len() as u32;
+        let num_outputs = (page_num * conf.page_size as u32) + tx_nums.len() as u32;
         if self.capacity > 0 {
             self.num_outputs_by_script
                 .put(payload.to_vec(), num_outputs);
         }
-        Ok(Err(num_outputs))
+        Ok(num_outputs)
     }
 
-    fn increment_num_outputs(&mut self, payload: &[u8]) {
+    fn increment_num_outputs(&mut self, payload: &[u8], delta: u32) {
         if let Some(num_outputs) = self.num_outputs_by_script.get_mut(payload) {
-            *num_outputs += 1;
+            *num_outputs += delta;
         }
     }
 
-    fn decrement_num_outputs(&mut self, payload: &[u8]) {
+    fn decrement_num_outputs(&mut self, payload: &[u8], delta: u32) {
         if let Some(num_outputs) = self.num_outputs_by_script.get_mut(payload) {
-            *num_outputs -= 1;
+            *num_outputs -= delta;
         }
     }
 }
@@ -276,10 +269,12 @@ impl OutputsWriterCache {
 #[cfg(test)]
 mod test {
     use crate::{
-        outpoint_data::OutpointData, outputs::key_for_script_payload, Db, OutpointEntry,
-        OutputsConf, OutputsReader, OutputsWriter, OutputsWriterCache, PayloadPrefix, TxNum,
+        outputs::key_for_script_payload, Db, OutputsConf, OutputsReader, OutputsWriter,
+        OutputsWriterCache, PayloadPrefix, TxNum, TxNumZC,
     };
-    use bitcoinsuite_core::{ecc::PubKey, Script, ShaRmd160, TxOutput, UnhashedTx};
+    use bitcoinsuite_core::{
+        ecc::PubKey, OutPoint, Script, Sha256d, ShaRmd160, TxInput, TxOutput, UnhashedTx,
+    };
     use bitcoinsuite_error::Result;
     use pretty_assertions::assert_eq;
     use rocksdb::WriteBatch;
@@ -292,7 +287,7 @@ mod test {
         let tempdir = tempdir::TempDir::new("slp-indexer-rocks--scripts")?;
         let db = Db::open(tempdir.path())?;
         let mut cache = OutputsWriterCache::with_capacity(4);
-        let conf = OutputsConf { page_size: 5 };
+        let conf = OutputsConf { page_size: 4 };
         let outputs_writer = OutputsWriter::new(&db, conf)?;
         let outputs_reader = OutputsReader::new(&db)?;
         let r = &outputs_reader;
@@ -307,25 +302,42 @@ mod test {
             [7; 33],
             [8; 32],
         );
-        let tx_scripts_block1 = vec![
-            vec![&script1, &script2],
-            vec![&script1, &script2, &script1, &script1],
+        let txs_block1: &[(&[_], &[_])] = &[(&[], &[&script1, &script2])];
+        let txs_block2: &[(&[_], &[_])] = &[
+            (&[], &[&script1, &script2, &script1, &script1]),
+            (&[(0, 0)], &[&script4, &script1]),
+            (&[(2, 1)], &[&script5, &script1]),
+            (&[(3, 0)], &[&script1, &script3, &script1, &script1]),
         ];
-        let tx_scripts_block2 = vec![
-            vec![&script4, &script1],
-            vec![&script5, &script1],
-            vec![&script1, &script3, &script1, &script1],
+        let txs_block3: &[(&[_], &[_])] = &[
+            (&[], &[&script6, &script1]),
+            (&[(3, 1), (0, 1)], &[&script7, &script1]),
         ];
-        let tx_scripts_block3 = vec![vec![&script6, &script1], vec![&script7, &script1]];
+        let txs_blocks = &[txs_block1, txs_block2, txs_block3];
         let mut blocks = Vec::new();
-        let mut num_txs = 0;
-        for tx_scripts in [&tx_scripts_block1, &tx_scripts_block2, &tx_scripts_block3] {
-            let txs = tx_scripts
-                .iter()
-                .map(|scripts| UnhashedTx {
+        let mut num_txs: TxNum = 0;
+        for &txs_block in txs_blocks {
+            let mut block_txids = Vec::new();
+            let mut txs = Vec::new();
+            let mut block_spent_scripts = Vec::new();
+            let first_tx_num = num_txs;
+            for (inputs, output_scripts) in txs_block {
+                let txid = Sha256d::new([num_txs as u8; 32]);
+                num_txs += 1;
+                block_txids.push(txid.clone());
+                txs.push(UnhashedTx {
                     version: 1,
-                    inputs: vec![],
-                    outputs: scripts
+                    inputs: inputs
+                        .iter()
+                        .map(|&(tx_num, out_idx)| TxInput {
+                            prev_out: OutPoint {
+                                txid: Sha256d::new([tx_num as u8; 32]),
+                                out_idx,
+                            },
+                            ..Default::default()
+                        })
+                        .collect(),
+                    outputs: output_scripts
                         .iter()
                         .map(|&script| TxOutput {
                             value: 0,
@@ -333,100 +345,103 @@ mod test {
                         })
                         .collect(),
                     lock_time: 0,
-                })
-                .collect::<Vec<_>>();
-            blocks.push((num_txs as TxNum, txs));
-            num_txs += tx_scripts.len();
+                });
+                let mut spent_scripts: Vec<&Script> = Vec::new();
+                for &(tx_num, out_idx) in inputs.iter() {
+                    let output_scripts = txs_blocks
+                        .iter()
+                        .flat_map(|txs_block| {
+                            txs_block.iter().map(|&(_, output_scripts)| output_scripts)
+                        })
+                        .nth(tx_num as usize)
+                        .unwrap();
+                    spent_scripts.push(output_scripts[out_idx as usize]);
+                }
+                block_spent_scripts.push(spent_scripts);
+            }
+            block_spent_scripts.remove(0);
+            blocks.push((first_tx_num, block_txids, txs, block_spent_scripts));
         }
+        let connect_block = |block_height: usize, cache: &mut OutputsWriterCache| -> Result<()> {
+            let mut batch = WriteBatch::default();
+            outputs_writer.insert_block_txs(
+                &mut batch,
+                blocks[block_height].0,
+                &blocks[block_height].2,
+                |tx_pos, input_idx| blocks[block_height].3[tx_pos][input_idx],
+                cache,
+            )?;
+            db.write_batch(batch)?;
+            Ok(())
+        };
+        let disconnect_block =
+            |block_height: usize, cache: &mut OutputsWriterCache| -> Result<()> {
+                let mut batch = WriteBatch::default();
+                outputs_writer.delete_block_txs(
+                    &mut batch,
+                    blocks[block_height].0,
+                    &blocks[block_height].2,
+                    |tx_pos, input_idx| blocks[block_height].3[tx_pos][input_idx],
+                    cache,
+                )?;
+                db.write_batch(batch)?;
+                Ok(())
+            };
         {
             check_pages(r, P2PKH, &payload1, [])?;
         }
         {
-            let mut batch = WriteBatch::default();
-            outputs_writer.insert_block_txs(&mut batch, blocks[0].0, &blocks[0].1, &mut cache)?;
-            db.write_batch(batch)?;
-            check_pages(r, P2PKH, &payload1, [&[(0, 0), (1, 0), (1, 2), (1, 3)]])?;
-            check_pages(r, P2PKH, &payload2, [&[(0, 1), (1, 1)]])?;
+            connect_block(0, &mut cache)?;
+            check_pages(r, P2PKH, &payload1, [&[0]])?;
+            check_pages(r, P2PKH, &payload2, [&[0]])?;
             check_pages(r, P2PK, &payload2, [])?;
         }
         {
-            let mut batch = WriteBatch::default();
-            outputs_writer.delete_block_txs(&mut batch, blocks[0].0, &blocks[0].1, &mut cache)?;
-            db.write_batch(batch)?;
+            disconnect_block(0, &mut cache)?;
             check_pages(r, P2PKH, &payload1, [])?;
             check_pages(r, P2PKH, &payload2, [])?;
         }
         {
-            let mut batch = WriteBatch::default();
-            outputs_writer.insert_block_txs(&mut batch, blocks[0].0, &blocks[0].1, &mut cache)?;
-            db.write_batch(batch)?;
-            let mut batch = WriteBatch::default();
-            outputs_writer.insert_block_txs(&mut batch, blocks[1].0, &blocks[1].1, &mut cache)?;
-            db.write_batch(batch)?;
-            check_pages(
-                r,
-                P2PKH,
-                &payload1,
-                [
-                    &[(0, 0), (1, 0), (1, 2), (1, 3), (2, 1)],
-                    &[(3, 1), (4, 0), (4, 2), (4, 3)],
-                ],
-            )?;
-            check_pages(r, P2PKH, &payload2, [&[(0, 1), (1, 1)]])?;
-            check_pages(r, P2SH, &payload3, [&[(4, 1)]])?;
-            check_pages(r, P2SH, &payload4, [&[(2, 0)]])?;
-            check_pages(r, P2PK, &payload5, [&[(3, 0)]])?;
+            connect_block(0, &mut cache)?;
+            connect_block(1, &mut cache)?;
+            check_pages(r, P2PKH, &payload1, [&[0, 1, 2, 3], &[4]])?;
+            check_pages(r, P2PKH, &payload2, [&[0, 1]])?;
+            check_pages(r, P2SH, &payload3, [&[4]])?;
+            check_pages(r, P2SH, &payload4, [&[2]])?;
+            check_pages(r, P2PK, &payload5, [&[3, 4]])?;
         }
         {
-            let mut batch = WriteBatch::default();
-            outputs_writer.insert_block_txs(&mut batch, blocks[2].0, &blocks[2].1, &mut cache)?;
-            db.write_batch(batch)?;
-            check_pages(
-                r,
-                P2PKH,
-                &payload1,
-                [
-                    &[(0, 0), (1, 0), (1, 2), (1, 3), (2, 1)],
-                    &[(3, 1), (4, 0), (4, 2), (4, 3), (5, 1)],
-                    &[(6, 1)],
-                ],
-            )?;
-            check_pages(r, P2TRCommitment, &payload6, [&[(5, 0)]])?;
-            check_pages(r, P2TRCommitment, &payload7, [&[(6, 0)]])?;
-            check_pages(r, P2TRState, &payload8, [&[(6, 0)]])?;
+            connect_block(2, &mut cache)?;
+            check_pages(r, P2PKH, &payload1, [&[0, 1, 2, 3], &[4, 5, 6]])?;
+            check_pages(r, P2PKH, &payload2, [&[0, 1, 6]])?;
+            check_pages(r, P2SH, &payload3, [&[4]])?;
+            check_pages(r, P2SH, &payload4, [&[2]])?;
+            check_pages(r, P2PK, &payload5, [&[3, 4]])?;
+            check_pages(r, P2TRCommitment, &payload6, [&[5]])?;
+            check_pages(r, P2TRCommitment, &payload7, [&[6]])?;
+            check_pages(r, P2TRState, &payload8, [&[6]])?;
         }
         {
-            let mut batch = WriteBatch::default();
-            outputs_writer.delete_block_txs(&mut batch, blocks[2].0, &blocks[2].1, &mut cache)?;
-            db.write_batch(batch)?;
-            check_pages(
-                r,
-                P2PKH,
-                &payload1,
-                [
-                    &[(0, 0), (1, 0), (1, 2), (1, 3), (2, 1)],
-                    &[(3, 1), (4, 0), (4, 2), (4, 3)],
-                ],
-            )?;
-            check_pages(r, P2PK, &payload5, [&[(3, 0)]])?;
+            disconnect_block(2, &mut cache)?;
+            check_pages(r, P2PKH, &payload1, [&[0, 1, 2, 3], &[4]])?;
+            check_pages(r, P2PKH, &payload2, [&[0, 1]])?;
+            check_pages(r, P2SH, &payload3, [&[4]])?;
+            check_pages(r, P2SH, &payload4, [&[2]])?;
+            check_pages(r, P2PK, &payload5, [&[3, 4]])?;
             check_pages(r, P2TRCommitment, &payload6, [])?;
             check_pages(r, P2TRCommitment, &payload7, [])?;
             check_pages(r, P2TRState, &payload8, [])?;
         }
         {
-            let mut batch = WriteBatch::default();
-            outputs_writer.delete_block_txs(&mut batch, blocks[1].0, &blocks[1].1, &mut cache)?;
-            db.write_batch(batch)?;
-            check_pages(r, P2PKH, &payload1, [&[(0, 0), (1, 0), (1, 2), (1, 3)]])?;
-            check_pages(r, P2PKH, &payload2, [&[(0, 1), (1, 1)]])?;
+            disconnect_block(1, &mut cache)?;
+            check_pages(r, P2PKH, &payload1, [&[0]])?;
+            check_pages(r, P2PKH, &payload2, [&[0]])?;
             check_pages(r, P2SH, &payload3, [])?;
             check_pages(r, P2SH, &payload4, [])?;
             check_pages(r, P2PK, &payload5, [])?;
         }
         {
-            let mut batch = WriteBatch::default();
-            outputs_writer.delete_block_txs(&mut batch, blocks[0].0, &blocks[0].1, &mut cache)?;
-            db.write_batch(batch)?;
+            disconnect_block(0, &mut cache)?;
             check_pages(r, P2PKH, &payload1, [])?;
             check_pages(r, P2PKH, &payload2, [])?;
             check_pages(r, P2SH, &payload3, [])?;
@@ -440,7 +455,7 @@ mod test {
         outputs_reader: &OutputsReader,
         prefix: PayloadPrefix,
         payload_body: &[u8],
-        expected_txs: [&[(TxNum, u32)]; N],
+        expected_txs: [&[TxNum]; N],
     ) -> Result<()> {
         assert_eq!(
             outputs_reader.num_pages_by_payload(prefix, payload_body)?,
@@ -449,10 +464,7 @@ mod test {
         for (page_num, txs) in expected_txs.into_iter().enumerate() {
             assert_eq!(
                 outputs_reader.page_txs(page_num as u32, prefix, payload_body)?,
-                txs.iter()
-                    .cloned()
-                    .map(|(tx_num, out_idx)| OutpointEntry { tx_num, out_idx })
-                    .collect::<Vec<_>>(),
+                txs.to_vec(),
             );
             let script_payload = [[prefix as u8].as_ref(), payload_body].concat();
             let key = key_for_script_payload(&script_payload, page_num as u32);
@@ -460,14 +472,7 @@ mod test {
                 .db
                 .get(outputs_reader.cf_outputs, &key)?
                 .unwrap();
-            let entry_data = txs
-                .iter()
-                .cloned()
-                .map(|(tx_num, out_idx)| OutpointData {
-                    tx_num: tx_num.into(),
-                    out_idx: out_idx.into(),
-                })
-                .collect::<Vec<_>>();
+            let entry_data = txs.iter().cloned().map(TxNumZC::new).collect::<Vec<_>>();
             assert_eq!(value.as_ref(), entry_data.as_bytes());
         }
         Ok(())

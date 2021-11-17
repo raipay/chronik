@@ -67,7 +67,7 @@ impl<'a> UtxosWriter<'a> {
         first_tx_num: TxNum,
         txids_fn: impl Fn(usize) -> &'b Sha256d,
         txs: &[UnhashedTx],
-        block_spent_script_fn: impl Fn(/*tx_num:*/ usize, /*out_idx:*/ usize) -> &'b Script,
+        block_spent_script_fn: impl Fn(/*tx_idx:*/ usize, /*out_idx:*/ usize) -> &'b Script,
         input_tx_nums: &[Vec<u64>],
     ) -> Result<Timings> {
         let mut tx_num = first_tx_num;
@@ -188,7 +188,7 @@ impl<'a> UtxosWriter<'a> {
         first_tx_num: TxNum,
         txids_fn: impl Fn(usize) -> &'b Sha256d,
         txs: &[UnhashedTx],
-        block_spent_script_fn: impl Fn(/*tx_num:*/ usize, /*out_idx:*/ usize) -> &'b Script,
+        block_spent_script_fn: impl Fn(/*tx_idx:*/ usize, /*out_idx:*/ usize) -> &'b Script,
     ) -> Result<()> {
         let mut new_tx_nums = HashMap::new();
         for tx_idx in 0..txs.len() {

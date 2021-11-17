@@ -114,7 +114,7 @@ fn test_index_genesis(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
     )?;
     let r = &slp_indexer.db().outputs()?;
     let db_utxos = &slp_indexer.db().utxos()?;
-    check_pages(r, PayloadPrefix::P2PKLegacy, &genesis_payload, [&[(0, 1)]])?;
+    check_pages(r, PayloadPrefix::P2PKLegacy, &genesis_payload, [&[0]])?;
     check_utxos(
         db_utxos,
         PayloadPrefix::P2PKLegacy,
@@ -157,7 +157,7 @@ fn test_get_out_of_ibd(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> R
     )?;
     let r = &slp_indexer.db().outputs()?;
     let db_utxos = &slp_indexer.db().utxos()?;
-    check_pages(r, PayloadPrefix::P2SH, &[0; 20], [&[(1, 1)]])?;
+    check_pages(r, PayloadPrefix::P2SH, &[0; 20], [&[1]])?;
     check_utxos(db_utxos, PayloadPrefix::P2SH, &[0; 20], [(1, 1)])?;
 
     // catchup finished
@@ -179,7 +179,7 @@ fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Resu
         &slp_indexer.db().outputs()?,
         PayloadPrefix::P2SH,
         &[0; 20],
-        [&[(1, 1)]],
+        [&[1]],
     )?;
     check_utxos(
         &slp_indexer.db().utxos()?,
@@ -270,7 +270,7 @@ fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Resu
         &slp_indexer.db().outputs()?,
         PayloadPrefix::P2SH,
         anyone_payload,
-        [&[(1, 1)]],
+        [&[1]],
     )?;
     check_utxos(
         &slp_indexer.db().utxos()?,
@@ -297,7 +297,7 @@ fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Resu
         &slp_indexer.db().outputs()?,
         PayloadPrefix::P2SH,
         anyone_payload,
-        [&[(1, 1), (2, 1)]],
+        [&[1, 2]],
     )?;
     check_utxos(
         &slp_indexer.db().utxos()?,
@@ -313,7 +313,7 @@ fn check_pages<const N: usize>(
     outputs_reader: &OutputsReader,
     prefix: PayloadPrefix,
     payload_body: &[u8],
-    expected_txs: [&[(u64, u32)]; N],
+    expected_txs: [&[u64]; N],
 ) -> Result<()> {
     assert_eq!(
         outputs_reader.num_pages_by_payload(prefix, payload_body)?,
@@ -322,10 +322,7 @@ fn check_pages<const N: usize>(
     for (page_num, txs) in expected_txs.into_iter().enumerate() {
         assert_eq!(
             outputs_reader.page_txs(page_num as u32, prefix, payload_body)?,
-            txs.iter()
-                .cloned()
-                .map(|(tx_num, out_idx)| OutpointEntry { tx_num, out_idx })
-                .collect::<Vec<_>>(),
+            txs.to_vec(),
         );
     }
     Ok(())

@@ -87,7 +87,7 @@ impl IndexDb {
         block: &Block,
         block_txs: &'b BlockTxs,
         txs: &[UnhashedTx],
-        block_spent_script_fn: impl Fn(/*tx_num:*/ usize, /*out_idx:*/ usize) -> &'b Script,
+        block_spent_script_fn: impl Fn(/*tx_idx:*/ usize, /*out_idx:*/ usize) -> &'b Script,
         data: &mut IndexMemData,
     ) -> Result<()> {
         let mut timings = self.timings.write().unwrap();
@@ -119,6 +119,7 @@ impl IndexDb {
             &mut batch,
             first_tx_num,
             txs,
+            &block_spent_script_fn,
             &mut data.outputs_cache,
         )?;
         timings.timings.stop_timer("outputs");
@@ -170,7 +171,7 @@ impl IndexDb {
         height: BlockHeight,
         txids_fn: impl Fn(usize) -> &'b Sha256d + Send + Sync,
         txs: &[UnhashedTx],
-        block_spent_script_fn: impl Fn(/*tx_num:*/ usize, /*out_idx:*/ usize) -> &'b Script,
+        block_spent_script_fn: impl Fn(/*tx_idx:*/ usize, /*out_idx:*/ usize) -> &'b Script,
         data: &mut IndexMemData,
     ) -> Result<()> {
         let block_writer = BlockWriter::new(&self.db)?;
@@ -190,7 +191,13 @@ impl IndexDb {
             .by_hash(block_hash)?
             .ok_or_else(|| UnknownBlock(block_hash.clone()))?;
         tx_writer.delete_block_txs(&mut batch, block.height)?;
-        output_writer.delete_block_txs(&mut batch, first_tx_num, txs, &mut data.outputs_cache)?;
+        output_writer.delete_block_txs(
+            &mut batch,
+            first_tx_num,
+            txs,
+            &block_spent_script_fn,
+            &mut data.outputs_cache,
+        )?;
         utxo_writer.delete_block_txs(
             &mut batch,
             first_tx_num,
