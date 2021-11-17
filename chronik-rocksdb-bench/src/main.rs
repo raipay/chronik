@@ -195,6 +195,8 @@ fn main() -> Result<()> {
                     txid: tx.hash().clone(),
                     tx_size: tx.raw().len() as u32,
                     data_pos: 0,
+                    undo_pos: 0,
+                    undo_size: 0,
                 })
                 .collect(),
             block_height: block_height as i32,

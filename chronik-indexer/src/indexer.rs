@@ -249,6 +249,8 @@ impl SlpIndexer {
                 txid: tx.tx.txid.clone(),
                 data_pos: tx.data_pos,
                 tx_size: tx.tx.raw.len() as u32,
+                undo_pos: tx.undo_pos,
+                undo_size: tx.undo_size,
             })
             .collect::<Vec<_>>();
         let db_block_txs = BlockTxs {

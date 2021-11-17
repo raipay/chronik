@@ -66,6 +66,8 @@ fn check_tx_indexed(
     block_height: i32,
     data_pos: u32,
     tx_size: u32,
+    undo_pos: u32,
+    undo_size: u32,
 ) -> Result<()> {
     let db_txs = slp_indexer.db().txs()?;
     assert_eq!(
@@ -76,6 +78,8 @@ fn check_tx_indexed(
                 txid: txid.clone(),
                 data_pos,
                 tx_size,
+                undo_pos,
+                undo_size,
             }
         })
     );
@@ -101,6 +105,8 @@ fn test_index_genesis(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
         0,
         170,
         217,
+        0,
+        0,
     )?;
     let genesis_payload = hex::decode(
         "04678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e5\
@@ -146,6 +152,8 @@ fn test_get_out_of_ibd(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> R
         1,
         557,
         111,
+        0,
+        0,
     )?;
     let r = &slp_indexer.db().outputs()?;
     let db_utxos = &slp_indexer.db().utxos()?;
@@ -166,7 +174,7 @@ fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Resu
     // build two empty blocks that reorg the previous block
     let tip = slp_indexer.db().blocks()?.tip()?.unwrap();
     let old_txid = get_coinbase_txid(bitcoind, &tip.hash)?;
-    check_tx_indexed(slp_indexer, &old_txid, 1, 557, 111)?;
+    check_tx_indexed(slp_indexer, &old_txid, 1, 557, 111, 0, 0)?;
     check_pages(
         &slp_indexer.db().outputs()?,
         PayloadPrefix::P2SH,
@@ -214,6 +222,8 @@ fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Resu
         0,
         170,
         217,
+        0,
+        0,
     )?;
     check_pages(
         &slp_indexer.db().outputs()?,
@@ -253,6 +263,8 @@ fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Resu
         1,
         838,
         180,
+        0,
+        0,
     )?;
     check_pages(
         &slp_indexer.db().outputs()?,
@@ -278,6 +290,8 @@ fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Resu
         2,
         1188,
         180,
+        0,
+        0,
     )?;
     check_pages(
         &slp_indexer.db().outputs()?,

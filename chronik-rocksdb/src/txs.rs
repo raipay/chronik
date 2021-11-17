@@ -31,6 +31,8 @@ pub struct TxEntry {
     pub txid: Sha256d,
     pub data_pos: u32,
     pub tx_size: u32,
+    pub undo_pos: u32,
+    pub undo_size: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +53,8 @@ struct TxData {
     pub txid: [u8; 32],
     pub data_pos: U32<LE>,
     pub tx_size: U32<LE>,
+    pub undo_pos: U32<LE>,
+    pub undo_size: U32<LE>,
 }
 
 pub struct TxWriter<'a> {
@@ -135,6 +139,8 @@ impl<'a> TxWriter<'a> {
                 txid: tx.txid.byte_array().array(),
                 data_pos: U32::new(tx.data_pos),
                 tx_size: U32::new(tx.tx_size),
+                undo_pos: U32::new(tx.undo_pos),
+                undo_size: U32::new(tx.undo_size),
             };
             let tx_num = TxNumOrd(TxNumZC::new(next_tx_num));
             batch.put_cf(self.cf_txs, tx_num.as_bytes(), tx_data.as_bytes());
@@ -197,19 +203,31 @@ impl<'a> TxReader<'a> {
     }
 
     pub fn by_txid(&self, txid: &Sha256d) -> Result<Option<BlockTx>> {
+        match self.tx_and_num_by_txid(txid)? {
+            Some((_, block_tx)) => Ok(Some(block_tx)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn tx_and_num_by_txid(&self, txid: &Sha256d) -> Result<Option<(TxNum, BlockTx)>> {
         let (tx_num, tx_data) = match self.txid_index.get(self.db, txid.byte_array().as_array())? {
             Some(tuple) => tuple,
             None => return Ok(None),
         };
         let block_height = self.block_height_by_tx_num(tx_num.0)?;
-        Ok(Some(BlockTx {
-            entry: TxEntry {
-                txid: Sha256d::new(tx_data.txid),
-                data_pos: tx_data.data_pos.get(),
-                tx_size: tx_data.tx_size.get(),
+        Ok(Some((
+            tx_num.0.get(),
+            BlockTx {
+                entry: TxEntry {
+                    txid: Sha256d::new(tx_data.txid),
+                    data_pos: tx_data.data_pos.get(),
+                    tx_size: tx_data.tx_size.get(),
+                    undo_pos: tx_data.undo_pos.get(),
+                    undo_size: tx_data.undo_size.get(),
+                },
+                block_height,
             },
-            block_height,
-        }))
+        )))
     }
 
     fn block_height_by_tx_num(&self, tx_num: TxNumZC) -> Result<BlockHeight> {
@@ -244,9 +262,21 @@ impl<'a> TxReader<'a> {
                 txid: Sha256d::new(tx_data.txid),
                 data_pos: tx_data.data_pos.get(),
                 tx_size: tx_data.tx_size.get(),
+                undo_pos: tx_data.undo_pos.get(),
+                undo_size: tx_data.undo_size.get(),
             },
             block_height,
         }))
+    }
+
+    pub fn txid_by_tx_num(&self, tx_num: TxNum) -> Result<Option<Sha256d>> {
+        let tx_num = TxNumZC::new(tx_num);
+        let tx_entry = match self.db.get(self.cf_txs(), tx_num.as_bytes())? {
+            Some(entry) => entry,
+            None => return Ok(None),
+        };
+        let tx_data = interpret::<TxData>(&tx_entry)?;
+        Ok(Some(Sha256d::new(tx_data.txid)))
     }
 
     pub fn first_tx_num_by_block(&self, block_height: BlockHeight) -> Result<Option<TxNum>> {
@@ -323,6 +353,8 @@ mod test {
             txid: Sha256d::new([1; 32]),
             data_pos: 100,
             tx_size: 1000,
+            undo_pos: 10,
+            undo_size: 1,
         };
         let block_tx1 = BlockTx {
             entry: tx1.clone(),
@@ -353,6 +385,8 @@ mod test {
             txid: Sha256d::new([2; 32]),
             data_pos: 200,
             tx_size: 2000,
+            undo_pos: 20,
+            undo_size: 2,
         };
         let block_tx2 = BlockTx {
             entry: tx2.clone(),
@@ -362,6 +396,8 @@ mod test {
             txid: Sha256d::new([3; 32]),
             data_pos: 300,
             tx_size: 3000,
+            undo_pos: 30,
+            undo_size: 3,
         };
         let block_tx3 = BlockTx {
             entry: tx3.clone(),
@@ -422,6 +458,8 @@ mod test {
             txid: Sha256d::new([102; 32]),
             data_pos: 200,
             tx_size: 2000,
+            undo_pos: 20,
+            undo_size: 2,
         };
         let block_tx2 = BlockTx {
             entry: tx2.clone(),
@@ -431,6 +469,8 @@ mod test {
             txid: Sha256d::new([103; 32]),
             data_pos: 300,
             tx_size: 3000,
+            undo_pos: 30,
+            undo_size: 3,
         };
         let block_tx3 = BlockTx {
             entry: tx3.clone(),

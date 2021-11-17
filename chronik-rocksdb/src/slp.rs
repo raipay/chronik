@@ -1038,6 +1038,8 @@ mod tests {
                     txid,
                     data_pos: 0,
                     tx_size: 0,
+                    undo_pos: 0,
+                    undo_size: 0,
                 })
                 .collect::<Vec<_>>();
             // Validate SLP txs and insert
