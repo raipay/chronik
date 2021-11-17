@@ -9,7 +9,7 @@ use crate::{script_payload::script_payloads, PayloadPrefix};
 #[derive(Debug, PartialEq, Eq, Default)]
 pub struct MempoolData {
     txs: HashMap<Sha256d, (UnhashedTx, Vec<TxOutput>)>,
-    outputs: HashMap<Bytes, BTreeSet<OutPoint>>,
+    outputs: HashMap<Bytes, BTreeSet<Sha256d>>,
     utxos: HashMap<Bytes, UtxoDelta>,
     spends: HashMap<Sha256d, BTreeSet<(u32, Sha256d, u32)>>,
 }
@@ -31,10 +31,6 @@ pub enum MempoolDataError {
     #[critical()]
     #[error("No such mempool tx: {0}")]
     NoSuchTx(Sha256d),
-
-    #[critical()]
-    #[error("Output {0:?} already exists in mempool")]
-    DuplicateOutput(OutPoint),
 
     #[critical()]
     #[error("UTXO {0:?} already exists in mempool")]
@@ -59,10 +55,6 @@ pub enum MempoolDataError {
     #[critical()]
     #[error("Output {0:?} already unspent in mempool")]
     OutputAlreadyUnspent(OutPoint),
-
-    #[critical()]
-    #[error("Output {0:?} doesn't exist in mempool")]
-    OutputDoesntExist(OutPoint),
 
     #[critical()]
     #[error("UTXO {0:?} doesn't exist in mempool")]
@@ -90,10 +82,8 @@ impl MempoolData {
                     if !self.outputs.contains_key(&script_payload) {
                         self.outputs.insert(script_payload.clone(), BTreeSet::new());
                     }
-                    let outpoints = self.outputs.get_mut(&script_payload).expect("Impossible");
-                    if !outpoints.insert(outpoint.clone()) {
-                        return Err(DuplicateOutput(outpoint).into());
-                    }
+                    let txs = self.outputs.get_mut(&script_payload).expect("Impossible");
+                    txs.insert(txid.clone());
                 }
                 {
                     if !self.utxos.contains_key(&script_payload) {
@@ -111,6 +101,13 @@ impl MempoolData {
             for (prefix, mut script_payload) in script_payloads(&spent_output.script) {
                 script_payload.insert(0, prefix as u8);
                 let script_payload = Bytes::from_bytes(script_payload);
+                {
+                    if !self.outputs.contains_key(&script_payload) {
+                        self.outputs.insert(script_payload.clone(), BTreeSet::new());
+                    }
+                    let txs = self.outputs.get_mut(&script_payload).expect("Impossible");
+                    txs.insert(txid.clone());
+                }
                 if !self.utxos.contains_key(&script_payload) {
                     self.utxos
                         .insert(script_payload.clone(), UtxoDelta::default());
@@ -150,6 +147,12 @@ impl MempoolData {
             for (prefix, mut script_payload) in script_payloads(&spent_output.script) {
                 script_payload.insert(0, prefix as u8);
                 let script_payload = Bytes::from_bytes(script_payload);
+                if let Some(txs) = self.outputs.get_mut(&script_payload) {
+                    txs.remove(&txid);
+                    if txs.is_empty() {
+                        self.outputs.remove(&script_payload);
+                    }
+                }
                 if !self.utxos.contains_key(&script_payload) {
                     self.utxos
                         .insert(script_payload.clone(), UtxoDelta::default());
@@ -188,15 +191,11 @@ impl MempoolData {
             for (prefix, mut script_payload) in script_payloads(&output.script) {
                 script_payload.insert(0, prefix as u8);
                 let script_payload = Bytes::from_bytes(script_payload);
-                let outpoints = self
-                    .outputs
-                    .get_mut(&script_payload)
-                    .ok_or_else(|| OutputDoesntExist(outpoint.clone()))?;
-                if !outpoints.remove(&outpoint) {
-                    return Err(OutputDoesntExist(outpoint).into());
-                }
-                if outpoints.is_empty() {
-                    self.outputs.remove(&script_payload);
+                if let Some(txs) = self.outputs.get_mut(&script_payload) {
+                    txs.remove(&txid);
+                    if txs.is_empty() {
+                        self.outputs.remove(&script_payload);
+                    }
                 }
                 let delta = match mode {
                     MempoolDeleteMode::Remove => {
@@ -235,7 +234,7 @@ impl MempoolData {
         self.txs.get(txid)
     }
 
-    pub fn outputs(&self, prefix: PayloadPrefix, payload: &[u8]) -> Option<&BTreeSet<OutPoint>> {
+    pub fn outputs(&self, prefix: PayloadPrefix, payload: &[u8]) -> Option<&BTreeSet<Sha256d>> {
         let script_payload = [[prefix as u8].as_ref(), payload].concat();
         self.outputs.get(script_payload.as_slice())
     }
@@ -275,6 +274,7 @@ mod tests {
     #[test]
     fn test_mempool_data() -> Result<()> {
         use PayloadPrefix::*;
+        raipay_log::install()?;
         let mut mempool = MempoolData::default();
         let (script1, payload1) = (Script::p2pkh(&ShaRmd160::new([1; 20])), [1; 20]);
         let (script2, payload2) = (Script::p2pkh(&ShaRmd160::new([2; 20])), [2; 20]);
@@ -296,7 +296,7 @@ mod tests {
         let spent_scripts1 = vec![script1.clone()];
         mempool.insert_mempool_tx(txid1.clone(), tx1.clone(), make_spents(&spent_scripts1))?;
         check_tx(&mempool, &txid1, &tx1, &spent_scripts1);
-        check_outputs(&mempool, P2PKH, &payload2, [(&txid1, 0)]);
+        check_outputs(&mempool, P2PKH, &payload2, [&txid1]);
         check_utxos(&mempool, P2PKH, &payload1, [], [(&txid0, 4)]);
         check_utxos(&mempool, P2PKH, &payload2, [(&txid1, 0)], []);
         check_spends(&mempool, &txid0, [(4, &txid1, 0)]);
@@ -307,10 +307,10 @@ mod tests {
         let spent_scripts2 = vec![script3, script2];
         mempool.insert_mempool_tx(txid2.clone(), tx2.clone(), make_spents(&spent_scripts2))?;
         check_tx(&mempool, &txid2, &tx2, &spent_scripts2);
-        check_outputs(&mempool, P2PKH, &payload1, [(&txid2, 0)]);
-        check_outputs(&mempool, P2PKH, &payload2, [(&txid1, 0)]);
-        check_outputs_absent(&mempool, P2SH, &payload3);
-        check_outputs(&mempool, P2SH, &payload4, [(&txid2, 1)]);
+        check_outputs(&mempool, P2PKH, &payload1, [&txid1, &txid2]);
+        check_outputs(&mempool, P2PKH, &payload2, [&txid1, &txid2]);
+        check_outputs(&mempool, P2SH, &payload3, [&txid2]);
+        check_outputs(&mempool, P2SH, &payload4, [&txid2]);
         check_utxos(&mempool, P2PKH, &payload1, [(&txid2, 0)], [(&txid0, 4)]);
         check_utxos_absent(&mempool, P2PKH, &payload2);
         check_utxos(&mempool, P2SH, &payload3, [], [(&txid0, 5)]);
@@ -323,8 +323,8 @@ mod tests {
         mempool.delete_mempool_tx(&txid2, MempoolDeleteMode::Remove)?;
         check_tx(&mempool, &txid1, &tx1, &spent_scripts1);
         check_tx_absent(&mempool, &txid2);
-        check_outputs_absent(&mempool, P2PKH, &payload1);
-        check_outputs(&mempool, P2PKH, &payload2, [(&txid1, 0)]);
+        check_outputs(&mempool, P2PKH, &payload1, [&txid1]);
+        check_outputs(&mempool, P2PKH, &payload2, [&txid1]);
         check_outputs_absent(&mempool, P2SH, &payload3);
         check_outputs_absent(&mempool, P2SH, &payload4);
         check_utxos(&mempool, P2PKH, &payload1, [], [(&txid0, 4)]);
@@ -347,13 +347,13 @@ mod tests {
         let spent_scripts3 = vec![script7, script1.clone(), script1];
         mempool.insert_mempool_tx(txid3.clone(), tx3.clone(), make_spents(&spent_scripts3))?;
         check_tx(&mempool, &txid3, &tx3, &spent_scripts3);
-        check_outputs(&mempool, P2PKH, &payload1, [(&txid2, 0)]);
-        check_outputs(&mempool, P2PKH, &payload2, [(&txid1, 0)]);
-        check_outputs_absent(&mempool, P2SH, &payload3);
-        check_outputs(&mempool, P2SH, &payload4, [(&txid2, 1)]);
-        check_outputs(&mempool, P2PK, &payload5, [(&txid3, 0)]);
-        check_outputs(&mempool, P2TRCommitment, &payload6, [(&txid3, 1)]);
-        check_outputs_absent(&mempool, P2TRCommitment, &payload7);
+        check_outputs(&mempool, P2PKH, &payload1, [&txid1, &txid2, &txid3]);
+        check_outputs(&mempool, P2PKH, &payload2, [&txid1, &txid2]);
+        check_outputs(&mempool, P2SH, &payload3, [&txid2]);
+        check_outputs(&mempool, P2SH, &payload4, [&txid2]);
+        check_outputs(&mempool, P2PK, &payload5, [&txid3]);
+        check_outputs(&mempool, P2TRCommitment, &payload6, [&txid3]);
+        check_outputs(&mempool, P2TRCommitment, &payload7, [&txid3]);
         check_utxos(&mempool, P2PKH, &payload1, [], [(&txid0, 4), (&txid0, 7)]);
         check_utxos_absent(&mempool, P2PKH, &payload2);
         check_utxos(&mempool, P2SH, &payload3, [], [(&txid0, 5)]);
@@ -393,12 +393,12 @@ mod tests {
         check_tx_absent(&mempool, &txid1);
         check_tx(&mempool, &txid2, &tx2, &spent_scripts2);
         check_tx(&mempool, &txid3, &tx3, &spent_scripts3);
-        check_outputs(&mempool, P2PKH, &payload1, [(&txid2, 0)]);
-        check_outputs_absent(&mempool, P2PKH, &payload2);
-        check_outputs_absent(&mempool, P2SH, &payload3);
-        check_outputs(&mempool, P2SH, &payload4, [(&txid2, 1)]);
-        check_outputs(&mempool, P2PK, &payload5, [(&txid3, 0)]);
-        check_outputs(&mempool, P2TRCommitment, &payload6, [(&txid3, 1)]);
+        check_outputs(&mempool, P2PKH, &payload1, [&txid2, &txid3]);
+        check_outputs(&mempool, P2PKH, &payload2, [&txid2]);
+        check_outputs(&mempool, P2SH, &payload3, [&txid2]);
+        check_outputs(&mempool, P2SH, &payload4, [&txid2]);
+        check_outputs(&mempool, P2PK, &payload5, [&txid3]);
+        check_outputs(&mempool, P2TRCommitment, &payload6, [&txid3]);
         check_utxos(&mempool, P2PKH, &payload1, [], [(&txid0, 7)]);
         check_utxos(&mempool, P2PKH, &payload2, [], [(&txid1, 0)]);
         check_utxos(&mempool, P2SH, &payload3, [], [(&txid0, 5)]);
@@ -419,12 +419,12 @@ mod tests {
         mempool.delete_mempool_tx(&txid2, MempoolDeleteMode::Mined)?;
         check_tx_absent(&mempool, &txid1);
         check_tx_absent(&mempool, &txid2);
-        check_outputs_absent(&mempool, P2PKH, &payload1);
+        check_outputs(&mempool, P2PKH, &payload1, [&txid3]);
         check_outputs_absent(&mempool, P2PKH, &payload2);
         check_outputs_absent(&mempool, P2SH, &payload3);
         check_outputs_absent(&mempool, P2SH, &payload4);
-        check_outputs(&mempool, P2PK, &payload5, [(&txid3, 0)]);
-        check_outputs(&mempool, P2TRCommitment, &payload6, [(&txid3, 1)]);
+        check_outputs(&mempool, P2PK, &payload5, [&txid3]);
+        check_outputs(&mempool, P2TRCommitment, &payload6, [&txid3]);
         check_utxos(&mempool, P2PKH, &payload1, [], [(&txid0, 7), (&txid2, 0)]);
         check_utxos_absent(&mempool, P2PKH, &payload2);
         check_utxos_absent(&mempool, P2SH, &payload3);
@@ -464,14 +464,11 @@ mod tests {
         mempool: &MempoolData,
         prefix: PayloadPrefix,
         payload: &[u8],
-        expected_outpoints: [(&Sha256d, u32); N],
+        expected_outpoints: [&Sha256d; N],
     ) {
         let expected_outpoints = expected_outpoints
             .into_iter()
-            .map(|(txid, out_idx)| OutPoint {
-                txid: txid.clone(),
-                out_idx,
-            })
+            .cloned()
             .collect::<BTreeSet<_>>();
         let script_payload = [[prefix as u8].as_ref(), payload].concat();
         assert_eq!(
