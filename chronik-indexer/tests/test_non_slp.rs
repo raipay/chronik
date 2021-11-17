@@ -107,6 +107,13 @@ fn test_index_genesis(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
     assert_eq!(db_blocks.height()?, 0);
     let tip = db_blocks.tip()?.unwrap();
     assert_eq!(tip.hash.to_hex_be(), info["bestblockhash"]);
+    let block = slp_indexer.blocks().by_height(0)?.unwrap();
+    let raw_header = slp_indexer.blocks().raw_header(&block)?.unwrap();
+    let block_header_hex = bitcoind.cmd_string(
+        "getblockheader",
+        &[info["bestblockhash"].as_str().unwrap(), "false"],
+    )?;
+    assert_eq!(hex::encode(&raw_header), block_header_hex);
     check_tx_indexed(
         slp_indexer,
         &get_coinbase_txid(bitcoind, &tip.hash)?,

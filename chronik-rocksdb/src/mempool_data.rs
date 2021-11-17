@@ -148,7 +148,7 @@ impl MempoolData {
                 script_payload.insert(0, prefix as u8);
                 let script_payload = Bytes::from_bytes(script_payload);
                 if let Some(txs) = self.outputs.get_mut(&script_payload) {
-                    txs.remove(&txid);
+                    txs.remove(txid);
                     if txs.is_empty() {
                         self.outputs.remove(&script_payload);
                     }
@@ -192,7 +192,7 @@ impl MempoolData {
                 script_payload.insert(0, prefix as u8);
                 let script_payload = Bytes::from_bytes(script_payload);
                 if let Some(txs) = self.outputs.get_mut(&script_payload) {
-                    txs.remove(&txid);
+                    txs.remove(txid);
                     if txs.is_empty() {
                         self.outputs.remove(&script_payload);
                     }
@@ -274,7 +274,7 @@ mod tests {
     #[test]
     fn test_mempool_data() -> Result<()> {
         use PayloadPrefix::*;
-        raipay_log::install()?;
+        bitcoinsuite_error::install()?;
         let mut mempool = MempoolData::default();
         let (script1, payload1) = (Script::p2pkh(&ShaRmd160::new([1; 20])), [1; 20]);
         let (script2, payload2) = (Script::p2pkh(&ShaRmd160::new([2; 20])), [2; 20]);
