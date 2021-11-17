@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use bitcoinsuite_bitcoind::cli::BitcoinCli;
 use bitcoinsuite_bitcoind_nng::{Message, PubInterface, RpcInterface};
-use bitcoinsuite_core::{BitcoinCode, Bytes, Hashed, Sha256d, UnhashedTx};
+use bitcoinsuite_core::{ecc::Ecc, BitcoinCode, Bytes, Hashed, Network, Sha256d, UnhashedTx};
 use bitcoinsuite_error::{ErrorMeta, Result};
 use thiserror::Error;
 
@@ -10,12 +10,16 @@ use chronik_rocksdb::{
     Block, BlockTxs, IndexDb, IndexMemData, MempoolData, MempoolSlpData, TxEntry,
 };
 
+use crate::txs::Txs;
+
 pub struct SlpIndexer {
-    db: IndexDb,
-    bitcoind: BitcoinCli,
-    rpc_interface: RpcInterface,
-    pub_interface: PubInterface,
-    data: IndexMemData,
+    pub(crate) db: IndexDb,
+    pub(crate) bitcoind: BitcoinCli,
+    pub(crate) rpc_interface: RpcInterface,
+    pub(crate) pub_interface: PubInterface,
+    pub(crate) data: IndexMemData,
+    pub(crate) network: Network,
+    pub(crate) ecc: Arc<dyn Ecc>,
 }
 
 #[derive(Debug, Error, ErrorMeta)]
@@ -43,6 +47,8 @@ impl SlpIndexer {
         rpc_interface: RpcInterface,
         pub_interface: PubInterface,
         data: IndexMemData,
+        network: Network,
+        ecc: Arc<dyn Ecc>,
     ) -> Result<Self> {
         pub_interface.subscribe("------------")?;
         Ok(SlpIndexer {
@@ -51,6 +57,8 @@ impl SlpIndexer {
             rpc_interface,
             pub_interface,
             data,
+            network,
+            ecc,
         })
     }
 
@@ -212,6 +220,10 @@ impl SlpIndexer {
 
     pub fn db_mempool_slp(&self) -> &MempoolSlpData {
         self.db.mempool_slp(&self.data)
+    }
+
+    pub fn txs(&self) -> Txs {
+        Txs::new(self)
     }
 
     fn _block_txs(block: &bitcoinsuite_bitcoind_nng::Block) -> Result<Vec<UnhashedTx>> {

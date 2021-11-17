@@ -11,8 +11,8 @@ use thiserror::Error;
 use crate::{
     input_tx_nums::fetch_input_tx_nums, Block, BlockHeight, BlockReader, BlockTxs, BlockWriter, Db,
     MempoolData, MempoolDeleteMode, MempoolSlpData, MempoolWriter, OutputsConf, OutputsReader,
-    OutputsWriter, OutputsWriterCache, SlpWriter, SpendsReader, SpendsWriter, Timings, TxReader,
-    TxWriter, UtxosReader, UtxosWriter,
+    OutputsWriter, OutputsWriterCache, SlpReader, SlpWriter, SpendsReader, SpendsWriter, Timings,
+    TxReader, TxWriter, UtxosReader, UtxosWriter,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
@@ -68,6 +68,10 @@ impl IndexDb {
 
     pub fn spends(&self) -> Result<SpendsReader> {
         SpendsReader::new(&self.db)
+    }
+
+    pub fn slp(&self) -> Result<SlpReader> {
+        SlpReader::new(&self.db)
     }
 
     pub fn timings(&self) -> RwLockReadGuard<IndexTimings> {

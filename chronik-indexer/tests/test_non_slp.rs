@@ -1,4 +1,4 @@
-use std::{ffi::OsString, str::FromStr, time::Duration};
+use std::{ffi::OsString, str::FromStr, sync::Arc, time::Duration};
 
 use bitcoinsuite_bitcoind::{
     cli::BitcoinCli,
@@ -7,8 +7,9 @@ use bitcoinsuite_bitcoind::{
 use bitcoinsuite_bitcoind_nng::{PubInterface, RpcInterface};
 use bitcoinsuite_core::{
     build_lotus_block, build_lotus_coinbase, AddressType, BitcoinCode, Bytes, CashAddress, Hashed,
-    Script, Sha256d, ShaRmd160, BCHREG,
+    Network, Script, Sha256d, ShaRmd160, BCHREG,
 };
+use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
 use bitcoinsuite_error::Result;
 use bitcoinsuite_test_utils::bin_folder;
 use chronik_indexer::SlpIndexer;
@@ -45,8 +46,15 @@ fn test_non_slp() -> Result<()> {
     let db = IndexDb::new(db);
     let bitcoin_cli = instance.cli();
     let cache = IndexMemData::new(10);
-    let mut slp_indexer =
-        SlpIndexer::new(db, bitcoin_cli.clone(), rpc_interface, pub_interface, cache)?;
+    let mut slp_indexer = SlpIndexer::new(
+        db,
+        bitcoin_cli.clone(),
+        rpc_interface,
+        pub_interface,
+        cache,
+        Network::XPI,
+        Arc::new(EccSecp256k1::default()),
+    )?;
     test_index_genesis(&mut slp_indexer, bitcoin_cli)?;
     test_get_out_of_ibd(&mut slp_indexer, bitcoin_cli)?;
     test_reorg_empty(&mut slp_indexer, bitcoin_cli)?;
