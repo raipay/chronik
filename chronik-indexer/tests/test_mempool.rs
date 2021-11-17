@@ -107,7 +107,13 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
     slp_indexer.process_next_msg()?;
     assert_eq!(
         slp_indexer.db_mempool().tx(&txid1),
-        Some(&(tx1.clone(), vec![anyone_script.to_p2sh()])),
+        Some(&(
+            tx1.clone(),
+            vec![TxOutput {
+                value,
+                script: anyone_script.to_p2sh(),
+            }]
+        )),
     );
     assert_eq!(slp_indexer.db_mempool_slp().slp_tx_data(&txid1), None);
     assert_eq!(slp_indexer.db_mempool_slp().slp_tx_error(&txid1), None);
@@ -138,7 +144,13 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
     slp_indexer.process_next_msg()?;
     assert_eq!(
         slp_indexer.db_mempool().tx(&txid2),
-        Some(&(tx2.clone(), vec![anyone_script.to_p2sh()])),
+        Some(&(
+            tx2.clone(),
+            vec![TxOutput {
+                value,
+                script: anyone_script.to_p2sh(),
+            }],
+        )),
     );
     assert_eq!(
         slp_indexer.db_mempool_slp().slp_tx_data(&txid2),
@@ -153,6 +165,16 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
             },
             slp_burns: vec![None],
         })
+    );
+    assert_eq!(
+        slp_indexer.db_mempool().tx(&txid2),
+        Some(&(
+            tx2.clone(),
+            vec![TxOutput {
+                value,
+                script: anyone_script.to_p2sh(),
+            }]
+        )),
     );
     assert_eq!(slp_indexer.db_mempool_slp().slp_tx_error(&txid2), None);
 
@@ -200,7 +222,23 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
     slp_indexer.process_next_msg()?;
     assert_eq!(
         slp_indexer.db_mempool().tx(&txid3),
-        Some(&(tx3.clone(), vec![anyone_script.to_p2sh(); 3])),
+        Some(&(
+            tx3.clone(),
+            vec![
+                TxOutput {
+                    value,
+                    script: anyone_script.to_p2sh(),
+                },
+                TxOutput {
+                    value: leftover_value,
+                    script: anyone_script.to_p2sh(),
+                },
+                TxOutput {
+                    value: leftover_value,
+                    script: anyone_script.to_p2sh(),
+                },
+            ],
+        )),
     );
     assert_eq!(
         slp_indexer.db_mempool_slp().slp_tx_data(&txid3),
@@ -214,7 +252,7 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
                 group_token_id: None,
             },
             slp_burns: vec![None, None, None],
-        })
+        }),
     );
     assert_eq!(slp_indexer.db_mempool_slp().slp_tx_error(&txid3), None);
 
@@ -238,15 +276,9 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
     assert_eq!(block_tx.entry.tx_size, tx1.raw().len() as u32);
     assert_eq!(block_tx.block_height, 111);
     assert_eq!(slp_indexer.db_mempool().tx(&txid1), None);
-    assert_eq!(
-        slp_indexer.db_mempool().tx(&txid2),
-        Some(&(tx2.clone(), vec![anyone_script.to_p2sh()])),
-    );
+    assert!(slp_indexer.db_mempool().tx(&txid2).is_some());
     assert!(slp_indexer.db_mempool_slp().slp_tx_data(&txid2).is_some());
-    assert_eq!(
-        slp_indexer.db_mempool().tx(&txid3),
-        Some(&(tx3.clone(), vec![anyone_script.to_p2sh(); 3])),
-    );
+    assert!(slp_indexer.db_mempool().tx(&txid3).is_some());
     assert!(slp_indexer.db_mempool_slp().slp_tx_data(&txid3).is_some());
 
     // modify tx3

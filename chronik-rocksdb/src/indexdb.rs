@@ -3,7 +3,7 @@ use std::{
     sync::{RwLock, RwLockReadGuard},
 };
 
-use bitcoinsuite_core::{Script, Sha256d, UnhashedTx};
+use bitcoinsuite_core::{Script, Sha256d, TxOutput, UnhashedTx};
 use bitcoinsuite_error::{ErrorMeta, Result};
 use rocksdb::WriteBatch;
 use thiserror::Error;
@@ -209,17 +209,17 @@ impl IndexDb {
         data: &mut IndexMemData,
         txid: Sha256d,
         tx: UnhashedTx,
-        spent_scripts: Vec<Script>,
+        spent_outputs: Vec<TxOutput>,
     ) -> Result<()> {
         self.mempool_writer(data)
-            .insert_mempool_tx(txid, tx, spent_scripts)?;
+            .insert_mempool_tx(txid, tx, spent_outputs)?;
         Ok(())
     }
 
     pub fn insert_mempool_batch_txs(
         &self,
         data: &mut IndexMemData,
-        txs: HashMap<Sha256d, (UnhashedTx, Vec<Script>)>,
+        txs: HashMap<Sha256d, (UnhashedTx, Vec<TxOutput>)>,
     ) -> Result<()> {
         self.mempool_writer(data).insert_mempool_batch_txs(txs)?;
         Ok(())

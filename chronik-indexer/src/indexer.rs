@@ -144,14 +144,14 @@ impl SlpIndexer {
             .map(|mempool_tx| {
                 let mut raw_tx = Bytes::from_bytes(mempool_tx.tx.raw);
                 let tx = UnhashedTx::deser(&mut raw_tx)?;
-                let spent_scripts = mempool_tx
+                let spent_outputs = mempool_tx
                     .tx
                     .spent_coins
                     .unwrap_or_default()
                     .into_iter()
-                    .map(|coin| coin.tx_output.script)
+                    .map(|coin| coin.tx_output)
                     .collect::<Vec<_>>();
-                Ok((mempool_tx.tx.txid, (tx, spent_scripts)))
+                Ok((mempool_tx.tx.txid, (tx, spent_outputs)))
             })
             .collect::<Result<HashMap<_, _>>>()?;
         println!("Found {} txs in mempool", txs.len());
@@ -180,14 +180,14 @@ impl SlpIndexer {
                 println!("Got TransactionAddedToMempool {}", mempool_tx.txid);
                 let mut raw_tx = Bytes::from_bytes(mempool_tx.raw);
                 let tx = UnhashedTx::deser(&mut raw_tx)?;
-                let spent_scripts = mempool_tx
+                let spent_outputs = mempool_tx
                     .spent_coins
                     .unwrap_or_default()
                     .into_iter()
-                    .map(|coin| coin.tx_output.script)
+                    .map(|coin| coin.tx_output)
                     .collect::<Vec<_>>();
                 self.db
-                    .insert_mempool_tx(&mut self.data, mempool_tx.txid, tx, spent_scripts)?;
+                    .insert_mempool_tx(&mut self.data, mempool_tx.txid, tx, spent_outputs)?;
             }
             Message::TransactionRemovedFromMempool(mempool_tx_removed) => {
                 println!(

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use bitcoinsuite_core::{Script, Sha256d, UnhashedTx};
+use bitcoinsuite_core::{Sha256d, TxOutput, UnhashedTx};
 use bitcoinsuite_error::{ErrorMeta, Result};
 use thiserror::Error;
 
@@ -30,7 +30,7 @@ impl<'a> MempoolWriter<'a> {
         &mut self,
         txid: Sha256d,
         tx: UnhashedTx,
-        spent_scripts: Vec<Script>,
+        spent_scripts: Vec<TxOutput>,
     ) -> Result<()> {
         self.mempool_slp.insert_mempool_tx(self.db, &txid, &tx)?;
         self.mempool.insert_mempool_tx(txid, tx, spent_scripts)?;
@@ -45,7 +45,7 @@ impl<'a> MempoolWriter<'a> {
 
     pub fn insert_mempool_batch_txs(
         &mut self,
-        mut txs: HashMap<Sha256d, (UnhashedTx, Vec<Script>)>,
+        mut txs: HashMap<Sha256d, (UnhashedTx, Vec<TxOutput>)>,
     ) -> Result<()> {
         let mut next_round = HashMap::new();
         loop {
@@ -205,7 +205,7 @@ mod tests {
                 .map(|(txid, tx)| {
                     (
                         txid.clone(),
-                        (tx.clone(), vec![Script::default(); tx.inputs.len()]),
+                        (tx.clone(), vec![TxOutput::default(); tx.inputs.len()]),
                     )
                 })
                 .collect::<HashMap<_, _>>();

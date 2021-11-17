@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 
-use bitcoinsuite_core::{Bytes, OutPoint, Script, Sha256d, UnhashedTx};
+use bitcoinsuite_core::{Bytes, OutPoint, Sha256d, TxOutput, UnhashedTx};
 use bitcoinsuite_error::{ErrorMeta, Result};
 use thiserror::Error;
 
@@ -8,7 +8,7 @@ use crate::{script_payload::script_payloads, PayloadPrefix};
 
 #[derive(Debug, PartialEq, Eq, Default)]
 pub struct MempoolData {
-    txs: HashMap<Sha256d, (UnhashedTx, Vec<Script>)>,
+    txs: HashMap<Sha256d, (UnhashedTx, Vec<TxOutput>)>,
     outputs: HashMap<Bytes, BTreeSet<OutPoint>>,
     utxos: HashMap<Bytes, UtxoDelta>,
     spends: HashMap<Sha256d, BTreeSet<(u32, Sha256d, u32)>>,
@@ -76,7 +76,7 @@ impl MempoolData {
         &mut self,
         txid: Sha256d,
         tx: UnhashedTx,
-        spent_scripts: Vec<Script>,
+        spent_outputs: Vec<TxOutput>,
     ) -> Result<()> {
         for (out_idx, output) in tx.outputs.iter().enumerate() {
             let outpoint = OutPoint {
@@ -107,8 +107,8 @@ impl MempoolData {
                 }
             }
         }
-        for (input_idx, (input, spent_script)) in tx.inputs.iter().zip(&spent_scripts).enumerate() {
-            for (prefix, mut script_payload) in script_payloads(spent_script) {
+        for (input_idx, (input, spent_output)) in tx.inputs.iter().zip(&spent_outputs).enumerate() {
+            for (prefix, mut script_payload) in script_payloads(&spent_output.script) {
                 script_payload.insert(0, prefix as u8);
                 let script_payload = Bytes::from_bytes(script_payload);
                 if !self.utxos.contains_key(&script_payload) {
@@ -135,19 +135,19 @@ impl MempoolData {
                 return Err(OutputAlreadySpent(input.prev_out.clone()).into());
             }
         }
-        if self.txs.insert(txid.clone(), (tx, spent_scripts)).is_some() {
+        if self.txs.insert(txid.clone(), (tx, spent_outputs)).is_some() {
             return Err(DuplicateTx(txid).into());
         }
         Ok(())
     }
 
     pub fn delete_mempool_tx(&mut self, txid: &Sha256d, mode: MempoolDeleteMode) -> Result<()> {
-        let (tx, spent_scripts) = match self.txs.remove(txid) {
+        let (tx, spent_outputs) = match self.txs.remove(txid) {
             Some(entry) => entry,
             None => return Err(NoSuchTx(txid.clone()).into()),
         };
-        for (input_idx, (input, spent_script)) in tx.inputs.iter().zip(&spent_scripts).enumerate() {
-            for (prefix, mut script_payload) in script_payloads(spent_script) {
+        for (input_idx, (input, spent_output)) in tx.inputs.iter().zip(&spent_outputs).enumerate() {
+            for (prefix, mut script_payload) in script_payloads(&spent_output.script) {
                 script_payload.insert(0, prefix as u8);
                 let script_payload = Bytes::from_bytes(script_payload);
                 if !self.utxos.contains_key(&script_payload) {
@@ -231,7 +231,7 @@ impl MempoolData {
         Ok(())
     }
 
-    pub fn tx(&self, txid: &Sha256d) -> Option<&(UnhashedTx, Vec<Script>)> {
+    pub fn tx(&self, txid: &Sha256d) -> Option<&(UnhashedTx, Vec<TxOutput>)> {
         self.txs.get(txid)
     }
 
@@ -294,7 +294,7 @@ mod tests {
         let txid1 = make_hash(10);
         let tx1 = make_tx([(1, 4)], [&script2]);
         let spent_scripts1 = vec![script1.clone()];
-        mempool.insert_mempool_tx(txid1.clone(), tx1.clone(), spent_scripts1.clone())?;
+        mempool.insert_mempool_tx(txid1.clone(), tx1.clone(), make_spents(&spent_scripts1))?;
         check_tx(&mempool, &txid1, &tx1, &spent_scripts1);
         check_outputs(&mempool, P2PKH, &payload2, [(&txid1, 0)]);
         check_utxos(&mempool, P2PKH, &payload1, [], [(&txid0, 4)]);
@@ -305,7 +305,7 @@ mod tests {
         let txid2 = make_hash(11);
         let tx2 = make_tx([(1, 5), (10, 0)], [&script1, &script4]);
         let spent_scripts2 = vec![script3, script2];
-        mempool.insert_mempool_tx(txid2.clone(), tx2.clone(), spent_scripts2.clone())?;
+        mempool.insert_mempool_tx(txid2.clone(), tx2.clone(), make_spents(&spent_scripts2))?;
         check_tx(&mempool, &txid2, &tx2, &spent_scripts2);
         check_outputs(&mempool, P2PKH, &payload1, [(&txid2, 0)]);
         check_outputs(&mempool, P2PKH, &payload2, [(&txid1, 0)]);
@@ -338,14 +338,14 @@ mod tests {
         assert_eq!(mempool, MempoolData::default());
 
         // Add txs back in
-        mempool.insert_mempool_tx(txid1.clone(), tx1.clone(), spent_scripts1.clone())?;
-        mempool.insert_mempool_tx(txid2.clone(), tx2.clone(), spent_scripts2.clone())?;
+        mempool.insert_mempool_tx(txid1.clone(), tx1.clone(), make_spents(&spent_scripts1))?;
+        mempool.insert_mempool_tx(txid2.clone(), tx2.clone(), make_spents(&spent_scripts2))?;
 
         // Add tx 3
         let txid3 = make_hash(12);
         let tx3 = make_tx([(1, 6), (1, 7), (11, 0)], [&script5, &script6]);
         let spent_scripts3 = vec![script7, script1.clone(), script1];
-        mempool.insert_mempool_tx(txid3.clone(), tx3.clone(), spent_scripts3.clone())?;
+        mempool.insert_mempool_tx(txid3.clone(), tx3.clone(), make_spents(&spent_scripts3))?;
         check_tx(&mempool, &txid3, &tx3, &spent_scripts3);
         check_outputs(&mempool, P2PKH, &payload1, [(&txid2, 0)]);
         check_outputs(&mempool, P2PKH, &payload2, [(&txid1, 0)]);
@@ -384,9 +384,9 @@ mod tests {
         assert_eq!(mempool, MempoolData::default());
 
         // Add txs back in
-        mempool.insert_mempool_tx(txid1.clone(), tx1, spent_scripts1)?;
-        mempool.insert_mempool_tx(txid2.clone(), tx2.clone(), spent_scripts2.clone())?;
-        mempool.insert_mempool_tx(txid3.clone(), tx3.clone(), spent_scripts3.clone())?;
+        mempool.insert_mempool_tx(txid1.clone(), tx1, make_spents(&spent_scripts1))?;
+        mempool.insert_mempool_tx(txid2.clone(), tx2.clone(), make_spents(&spent_scripts2))?;
+        mempool.insert_mempool_tx(txid3.clone(), tx3.clone(), make_spents(&spent_scripts3))?;
 
         // Delete txs in block mined order
         mempool.delete_mempool_tx(&txid1, MempoolDeleteMode::Mined)?;
@@ -452,7 +452,7 @@ mod tests {
     ) {
         assert_eq!(
             mempool.txs.get(txid),
-            Some(&(expectd_tx.clone(), spent_scripts.to_vec()))
+            Some(&(expectd_tx.clone(), make_spents(spent_scripts)))
         );
     }
 
@@ -570,5 +570,15 @@ mod tests {
         let mut hash = [0; 32];
         hash[31] = byte;
         Sha256d::new(hash)
+    }
+
+    fn make_spents(scripts: &[Script]) -> Vec<TxOutput> {
+        scripts
+            .iter()
+            .map(|script| TxOutput {
+                value: 0,
+                script: script.clone(),
+            })
+            .collect()
     }
 }
