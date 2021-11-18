@@ -68,6 +68,7 @@ fn get_coinbase_txid(bitcoind: &BitcoinCli, block_hash: &Sha256d) -> Result<Sha2
     Ok(txid)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_tx_indexed(
     slp_indexer: &SlpIndexer,
     txid: &Sha256d,
@@ -76,6 +77,7 @@ fn check_tx_indexed(
     tx_size: u32,
     undo_pos: u32,
     undo_size: u32,
+    time_first_seen: i64,
 ) -> Result<()> {
     let db_txs = slp_indexer.db().txs()?;
     assert_eq!(
@@ -88,6 +90,7 @@ fn check_tx_indexed(
                 tx_size,
                 undo_pos,
                 undo_size,
+                time_first_seen,
             }
         })
     );
@@ -120,6 +123,7 @@ fn test_index_genesis(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
         0,
         170,
         217,
+        0,
         0,
         0,
     )?;
@@ -169,6 +173,7 @@ fn test_get_out_of_ibd(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> R
         111,
         0,
         0,
+        0,
     )?;
     let r = &slp_indexer.db().outputs()?;
     let db_utxos = &slp_indexer.db().utxos()?;
@@ -189,7 +194,7 @@ fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Resu
     // build two empty blocks that reorg the previous block
     let tip = slp_indexer.db().blocks()?.tip()?.unwrap();
     let old_txid = get_coinbase_txid(bitcoind, &tip.hash)?;
-    check_tx_indexed(slp_indexer, &old_txid, 1, 557, 111, 0, 0)?;
+    check_tx_indexed(slp_indexer, &old_txid, 1, 557, 111, 0, 0, 0)?;
     check_pages(
         &slp_indexer.db().outputs()?,
         PayloadPrefix::P2SH,
@@ -239,6 +244,7 @@ fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Resu
         217,
         0,
         0,
+        0,
     )?;
     check_pages(
         &slp_indexer.db().outputs()?,
@@ -280,6 +286,7 @@ fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Resu
         180,
         0,
         0,
+        0,
     )?;
     check_pages(
         &slp_indexer.db().outputs()?,
@@ -305,6 +312,7 @@ fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Resu
         2,
         1188,
         180,
+        0,
         0,
         0,
     )?;

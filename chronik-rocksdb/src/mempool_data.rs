@@ -8,10 +8,17 @@ use crate::{script_payload::script_payloads, PayloadPrefix};
 
 #[derive(Debug, PartialEq, Eq, Default)]
 pub struct MempoolData {
-    txs: HashMap<Sha256d, (UnhashedTx, Vec<TxOutput>)>,
+    txs: HashMap<Sha256d, MempoolTxEntry>,
     outputs: HashMap<Bytes, BTreeSet<Sha256d>>,
     utxos: HashMap<Bytes, UtxoDelta>,
     spends: HashMap<Sha256d, BTreeSet<(u32, Sha256d, u32)>>,
+}
+
+#[derive(Debug, PartialEq, Eq, Default)]
+pub struct MempoolTxEntry {
+    pub tx: UnhashedTx,
+    pub spent_outputs: Vec<TxOutput>,
+    pub time_first_seen: i64,
 }
 
 #[derive(Debug, PartialEq, Eq, Default)]
@@ -69,6 +76,7 @@ impl MempoolData {
         txid: Sha256d,
         tx: UnhashedTx,
         spent_outputs: Vec<TxOutput>,
+        time_first_seen: i64,
     ) -> Result<()> {
         for (out_idx, output) in tx.outputs.iter().enumerate() {
             let outpoint = OutPoint {
@@ -132,14 +140,21 @@ impl MempoolData {
                 return Err(OutputAlreadySpent(input.prev_out.clone()).into());
             }
         }
-        if self.txs.insert(txid.clone(), (tx, spent_outputs)).is_some() {
+        let entry = MempoolTxEntry {
+            tx,
+            spent_outputs,
+            time_first_seen,
+        };
+        if self.txs.insert(txid.clone(), entry).is_some() {
             return Err(DuplicateTx(txid).into());
         }
         Ok(())
     }
 
     pub fn delete_mempool_tx(&mut self, txid: &Sha256d, mode: MempoolDeleteMode) -> Result<()> {
-        let (tx, spent_outputs) = match self.txs.remove(txid) {
+        let MempoolTxEntry {
+            tx, spent_outputs, ..
+        } = match self.txs.remove(txid) {
             Some(entry) => entry,
             None => return Err(NoSuchTx(txid.clone()).into()),
         };
@@ -230,7 +245,7 @@ impl MempoolData {
         Ok(())
     }
 
-    pub fn tx(&self, txid: &Sha256d) -> Option<&(UnhashedTx, Vec<TxOutput>)> {
+    pub fn tx(&self, txid: &Sha256d) -> Option<&MempoolTxEntry> {
         self.txs.get(txid)
     }
 
@@ -269,7 +284,9 @@ mod tests {
     use bitcoinsuite_error::Result;
     use pretty_assertions::assert_eq;
 
-    use crate::{mempool_data::UtxoDelta, MempoolData, MempoolDeleteMode, PayloadPrefix};
+    use crate::{
+        mempool_data::UtxoDelta, MempoolData, MempoolDeleteMode, MempoolTxEntry, PayloadPrefix,
+    };
 
     #[test]
     fn test_mempool_data() -> Result<()> {
@@ -294,8 +311,8 @@ mod tests {
         let txid1 = make_hash(10);
         let tx1 = make_tx([(1, 4)], [&script2]);
         let spent_scripts1 = vec![script1.clone()];
-        mempool.insert_mempool_tx(txid1.clone(), tx1.clone(), make_spents(&spent_scripts1))?;
-        check_tx(&mempool, &txid1, &tx1, &spent_scripts1);
+        mempool.insert_mempool_tx(txid1.clone(), tx1.clone(), make_spents(&spent_scripts1), 90)?;
+        check_tx(&mempool, &txid1, &tx1, &spent_scripts1, 90);
         check_outputs(&mempool, P2PKH, &payload2, [&txid1]);
         check_utxos(&mempool, P2PKH, &payload1, [], [(&txid0, 4)]);
         check_utxos(&mempool, P2PKH, &payload2, [(&txid1, 0)], []);
@@ -305,8 +322,8 @@ mod tests {
         let txid2 = make_hash(11);
         let tx2 = make_tx([(1, 5), (10, 0)], [&script1, &script4]);
         let spent_scripts2 = vec![script3, script2];
-        mempool.insert_mempool_tx(txid2.clone(), tx2.clone(), make_spents(&spent_scripts2))?;
-        check_tx(&mempool, &txid2, &tx2, &spent_scripts2);
+        mempool.insert_mempool_tx(txid2.clone(), tx2.clone(), make_spents(&spent_scripts2), 91)?;
+        check_tx(&mempool, &txid2, &tx2, &spent_scripts2, 91);
         check_outputs(&mempool, P2PKH, &payload1, [&txid1, &txid2]);
         check_outputs(&mempool, P2PKH, &payload2, [&txid1, &txid2]);
         check_outputs(&mempool, P2SH, &payload3, [&txid2]);
@@ -321,7 +338,7 @@ mod tests {
 
         // Remove tx 2
         mempool.delete_mempool_tx(&txid2, MempoolDeleteMode::Remove)?;
-        check_tx(&mempool, &txid1, &tx1, &spent_scripts1);
+        check_tx(&mempool, &txid1, &tx1, &spent_scripts1, 90);
         check_tx_absent(&mempool, &txid2);
         check_outputs(&mempool, P2PKH, &payload1, [&txid1]);
         check_outputs(&mempool, P2PKH, &payload2, [&txid1]);
@@ -338,15 +355,15 @@ mod tests {
         assert_eq!(mempool, MempoolData::default());
 
         // Add txs back in
-        mempool.insert_mempool_tx(txid1.clone(), tx1.clone(), make_spents(&spent_scripts1))?;
-        mempool.insert_mempool_tx(txid2.clone(), tx2.clone(), make_spents(&spent_scripts2))?;
+        mempool.insert_mempool_tx(txid1.clone(), tx1.clone(), make_spents(&spent_scripts1), 90)?;
+        mempool.insert_mempool_tx(txid2.clone(), tx2.clone(), make_spents(&spent_scripts2), 91)?;
 
         // Add tx 3
         let txid3 = make_hash(12);
         let tx3 = make_tx([(1, 6), (1, 7), (11, 0)], [&script5, &script6]);
         let spent_scripts3 = vec![script7, script1.clone(), script1];
-        mempool.insert_mempool_tx(txid3.clone(), tx3.clone(), make_spents(&spent_scripts3))?;
-        check_tx(&mempool, &txid3, &tx3, &spent_scripts3);
+        mempool.insert_mempool_tx(txid3.clone(), tx3.clone(), make_spents(&spent_scripts3), 92)?;
+        check_tx(&mempool, &txid3, &tx3, &spent_scripts3, 92);
         check_outputs(&mempool, P2PKH, &payload1, [&txid1, &txid2, &txid3]);
         check_outputs(&mempool, P2PKH, &payload2, [&txid1, &txid2]);
         check_outputs(&mempool, P2SH, &payload3, [&txid2]);
@@ -384,15 +401,15 @@ mod tests {
         assert_eq!(mempool, MempoolData::default());
 
         // Add txs back in
-        mempool.insert_mempool_tx(txid1.clone(), tx1, make_spents(&spent_scripts1))?;
-        mempool.insert_mempool_tx(txid2.clone(), tx2.clone(), make_spents(&spent_scripts2))?;
-        mempool.insert_mempool_tx(txid3.clone(), tx3.clone(), make_spents(&spent_scripts3))?;
+        mempool.insert_mempool_tx(txid1.clone(), tx1, make_spents(&spent_scripts1), 90)?;
+        mempool.insert_mempool_tx(txid2.clone(), tx2.clone(), make_spents(&spent_scripts2), 91)?;
+        mempool.insert_mempool_tx(txid3.clone(), tx3.clone(), make_spents(&spent_scripts3), 92)?;
 
         // Delete txs in block mined order
         mempool.delete_mempool_tx(&txid1, MempoolDeleteMode::Mined)?;
         check_tx_absent(&mempool, &txid1);
-        check_tx(&mempool, &txid2, &tx2, &spent_scripts2);
-        check_tx(&mempool, &txid3, &tx3, &spent_scripts3);
+        check_tx(&mempool, &txid2, &tx2, &spent_scripts2, 91);
+        check_tx(&mempool, &txid3, &tx3, &spent_scripts3, 92);
         check_outputs(&mempool, P2PKH, &payload1, [&txid2, &txid3]);
         check_outputs(&mempool, P2PKH, &payload2, [&txid2]);
         check_outputs(&mempool, P2SH, &payload3, [&txid2]);
@@ -449,10 +466,15 @@ mod tests {
         txid: &Sha256d,
         expectd_tx: &UnhashedTx,
         spent_scripts: &[Script],
+        time_first_seen: i64,
     ) {
         assert_eq!(
             mempool.txs.get(txid),
-            Some(&(expectd_tx.clone(), make_spents(spent_scripts)))
+            Some(&MempoolTxEntry {
+                tx: expectd_tx.clone(),
+                spent_outputs: make_spents(spent_scripts),
+                time_first_seen,
+            }),
         );
     }
 

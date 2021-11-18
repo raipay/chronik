@@ -3,16 +3,16 @@ use std::{
     sync::{RwLock, RwLockReadGuard},
 };
 
-use bitcoinsuite_core::{Script, Sha256d, TxOutput, UnhashedTx};
+use bitcoinsuite_core::{Script, Sha256d, UnhashedTx};
 use bitcoinsuite_error::{ErrorMeta, Result};
 use rocksdb::WriteBatch;
 use thiserror::Error;
 
 use crate::{
     input_tx_nums::fetch_input_tx_nums, Block, BlockHeight, BlockReader, BlockTxs, BlockWriter, Db,
-    MempoolData, MempoolDeleteMode, MempoolSlpData, MempoolWriter, OutputsConf, OutputsReader,
-    OutputsWriter, OutputsWriterCache, SlpReader, SlpWriter, SpendsReader, SpendsWriter, Timings,
-    TxReader, TxWriter, UtxosReader, UtxosWriter,
+    MempoolData, MempoolDeleteMode, MempoolSlpData, MempoolTxEntry, MempoolWriter, OutputsConf,
+    OutputsReader, OutputsWriter, OutputsWriterCache, SlpReader, SlpWriter, SpendsReader,
+    SpendsWriter, Timings, TxReader, TxWriter, UtxosReader, UtxosWriter,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
@@ -219,18 +219,16 @@ impl IndexDb {
         &self,
         data: &mut IndexMemData,
         txid: Sha256d,
-        tx: UnhashedTx,
-        spent_outputs: Vec<TxOutput>,
+        entry: MempoolTxEntry,
     ) -> Result<()> {
-        self.mempool_writer(data)
-            .insert_mempool_tx(txid, tx, spent_outputs)?;
+        self.mempool_writer(data).insert_mempool_tx(txid, entry)?;
         Ok(())
     }
 
     pub fn insert_mempool_batch_txs(
         &self,
         data: &mut IndexMemData,
-        txs: HashMap<Sha256d, (UnhashedTx, Vec<TxOutput>)>,
+        txs: HashMap<Sha256d, MempoolTxEntry>,
     ) -> Result<()> {
         self.mempool_writer(data).insert_mempool_batch_txs(txs)?;
         Ok(())

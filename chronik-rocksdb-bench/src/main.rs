@@ -197,6 +197,7 @@ fn main() -> Result<()> {
                     data_pos: 0,
                     undo_pos: 0,
                     undo_size: 0,
+                    time_first_seen: 0,
                 })
                 .collect(),
             block_height: block_height as i32,

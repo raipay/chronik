@@ -5,7 +5,7 @@ use bitcoinsuite_error::{ErrorMeta, Result};
 use byteorder::{BE, LE};
 use rocksdb::{ColumnFamilyDescriptor, Direction, IteratorMode, Options, WriteBatch};
 use thiserror::Error;
-use zerocopy::{AsBytes, FromBytes, Unaligned, U32, U64};
+use zerocopy::{AsBytes, FromBytes, Unaligned, I64, U32, U64};
 
 use crate::{
     data::interpret,
@@ -33,6 +33,7 @@ pub struct TxEntry {
     pub tx_size: u32,
     pub undo_pos: u32,
     pub undo_size: u32,
+    pub time_first_seen: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +56,7 @@ struct TxData {
     pub tx_size: U32<LE>,
     pub undo_pos: U32<LE>,
     pub undo_size: U32<LE>,
+    pub time_first_seen: I64<LE>,
 }
 
 pub struct TxWriter<'a> {
@@ -141,6 +143,7 @@ impl<'a> TxWriter<'a> {
                 tx_size: U32::new(tx.tx_size),
                 undo_pos: U32::new(tx.undo_pos),
                 undo_size: U32::new(tx.undo_size),
+                time_first_seen: I64::new(tx.time_first_seen),
             };
             let tx_num = TxNumOrd(TxNumZC::new(next_tx_num));
             batch.put_cf(self.cf_txs, tx_num.as_bytes(), tx_data.as_bytes());
@@ -224,6 +227,7 @@ impl<'a> TxReader<'a> {
                     tx_size: tx_data.tx_size.get(),
                     undo_pos: tx_data.undo_pos.get(),
                     undo_size: tx_data.undo_size.get(),
+                    time_first_seen: tx_data.time_first_seen.get(),
                 },
                 block_height,
             },
@@ -264,6 +268,7 @@ impl<'a> TxReader<'a> {
                 tx_size: tx_data.tx_size.get(),
                 undo_pos: tx_data.undo_pos.get(),
                 undo_size: tx_data.undo_size.get(),
+                time_first_seen: tx_data.time_first_seen.get(),
             },
             block_height,
         }))
@@ -355,6 +360,7 @@ mod test {
             tx_size: 1000,
             undo_pos: 10,
             undo_size: 1,
+            time_first_seen: 123456,
         };
         let block_tx1 = BlockTx {
             entry: tx1.clone(),
@@ -387,6 +393,7 @@ mod test {
             tx_size: 2000,
             undo_pos: 20,
             undo_size: 2,
+            time_first_seen: 234567,
         };
         let block_tx2 = BlockTx {
             entry: tx2.clone(),
@@ -398,6 +405,7 @@ mod test {
             tx_size: 3000,
             undo_pos: 30,
             undo_size: 3,
+            time_first_seen: 345678,
         };
         let block_tx3 = BlockTx {
             entry: tx3.clone(),
@@ -460,6 +468,7 @@ mod test {
             tx_size: 2000,
             undo_pos: 20,
             undo_size: 2,
+            time_first_seen: 234567,
         };
         let block_tx2 = BlockTx {
             entry: tx2.clone(),
@@ -471,6 +480,7 @@ mod test {
             tx_size: 3000,
             undo_pos: 30,
             undo_size: 3,
+            time_first_seen: 345678,
         };
         let block_tx3 = BlockTx {
             entry: tx3.clone(),

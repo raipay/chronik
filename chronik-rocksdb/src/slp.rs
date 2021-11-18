@@ -1040,6 +1040,7 @@ mod tests {
                     tx_size: 0,
                     undo_pos: 0,
                     undo_size: 0,
+                    time_first_seen: 0,
                 })
                 .collect::<Vec<_>>();
             // Validate SLP txs and insert

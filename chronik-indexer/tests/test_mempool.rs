@@ -19,7 +19,7 @@ use bitcoinsuite_slp::{
 use bitcoinsuite_test_utils::bin_folder;
 use bitcoinsuite_test_utils_blockchain::build_tx;
 use chronik_indexer::SlpIndexer;
-use chronik_rocksdb::{Db, IndexDb, IndexMemData, PayloadPrefix};
+use chronik_rocksdb::{Db, IndexDb, IndexMemData, MempoolTxEntry, PayloadPrefix};
 use pretty_assertions::{assert_eq, assert_ne};
 use tempdir::TempDir;
 
@@ -58,6 +58,7 @@ fn test_mempool() -> Result<()> {
         Network::XPI,
         Arc::new(EccSecp256k1::default()),
     )?;
+    bitcoind.cmd_string("setmocktime", &["1600000000"])?;
     test_index_mempool(&mut slp_indexer, bitcoind)?;
     instance.cleanup()?;
     Ok(())
@@ -128,18 +129,20 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
         spends: vec![None, None],
         slp_burns: vec![None],
         slp_error_msg: None,
+        time_first_seen: 1_600_000_000,
         network: Network::XPI,
     };
     slp_indexer.process_next_msg()?;
     assert_eq!(
         slp_indexer.db_mempool().tx(&txid1),
-        Some(&(
-            tx1.clone(),
-            vec![TxOutput {
+        Some(&MempoolTxEntry {
+            tx: tx1.clone(),
+            spent_outputs: vec![TxOutput {
                 value,
                 script: anyone_script.to_p2sh(),
-            }]
-        )),
+            }],
+            time_first_seen: 1_600_000_000,
+        }),
     );
     assert_eq!(slp_indexer.db_mempool_slp().slp_tx_data(&txid1), None);
     assert_eq!(slp_indexer.db_mempool_slp().slp_tx_error(&txid1), None);
@@ -198,18 +201,20 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
         spends: vec![None, None],
         slp_burns: vec![None],
         slp_error_msg: None,
+        time_first_seen: 1_600_000_000,
         network: Network::XPI,
     };
     slp_indexer.process_next_msg()?;
     assert_eq!(
         slp_indexer.db_mempool().tx(&txid2),
-        Some(&(
-            tx2.clone(),
-            vec![TxOutput {
+        Some(&MempoolTxEntry {
+            tx: tx2.clone(),
+            spent_outputs: vec![TxOutput {
                 value,
                 script: anyone_script.to_p2sh(),
             }],
-        )),
+            time_first_seen: 1_600_000_000,
+        }),
     );
     assert_eq!(
         slp_indexer.db_mempool_slp().slp_tx_data(&txid2),
@@ -227,13 +232,14 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
     );
     assert_eq!(
         slp_indexer.db_mempool().tx(&txid2),
-        Some(&(
-            tx2.clone(),
-            vec![TxOutput {
+        Some(&MempoolTxEntry {
+            tx: tx2.clone(),
+            spent_outputs: vec![TxOutput {
                 value,
                 script: anyone_script.to_p2sh(),
-            }]
-        )),
+            }],
+            time_first_seen: 1_600_000_000,
+        }),
     );
     assert_eq!(
         slp_indexer.db_mempool_slp().slp_tx_data(&txid2),
@@ -334,14 +340,15 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
         spends: vec![None, None],
         slp_burns: vec![None, None, None],
         slp_error_msg: None,
+        time_first_seen: 1_600_000_000,
         network: Network::XPI,
     };
     slp_indexer.process_next_msg()?;
     assert_eq!(
         slp_indexer.db_mempool().tx(&txid3),
-        Some(&(
-            tx3.clone(),
-            vec![
+        Some(&MempoolTxEntry {
+            tx: tx3.clone(),
+            spent_outputs: vec![
                 TxOutput {
                     value,
                     script: anyone_script.to_p2sh(),
@@ -355,7 +362,8 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
                     script: anyone_script.to_p2sh(),
                 },
             ],
-        )),
+            time_first_seen: 1_600_000_000,
+        }),
     );
     assert_eq!(
         slp_indexer.db_mempool_slp().slp_tx_data(&txid3),
@@ -518,6 +526,7 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
         spent_coins[1].height = Some(111);
         spent_coins[2].height = Some(112);
     }
+    rich_tx3.time_first_seen = 0; // tx not first seen in mempool
     assert_eq!(slp_indexer.txs().rich_tx_by_txid(&txid3)?, None);
     assert_eq!(
         slp_indexer.txs().rich_tx_by_txid(&txid3_modified)?,

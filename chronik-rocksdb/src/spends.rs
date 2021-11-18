@@ -193,6 +193,7 @@ mod test {
                     tx_size: 0,
                     undo_pos: 0,
                     undo_size: 0,
+                    time_first_seen: 0,
                 });
                 num_txs += 1;
                 txs.push(UnhashedTx {

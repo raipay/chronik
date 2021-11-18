@@ -7,7 +7,7 @@ use bitcoinsuite_error::{ErrorMeta, Result};
 use thiserror::Error;
 
 use chronik_rocksdb::{
-    Block, BlockTxs, IndexDb, IndexMemData, MempoolData, MempoolSlpData, TxEntry,
+    Block, BlockTxs, IndexDb, IndexMemData, MempoolData, MempoolSlpData, MempoolTxEntry, TxEntry,
 };
 
 use crate::{txs::Txs, Blocks};
@@ -159,7 +159,12 @@ impl SlpIndexer {
                     .into_iter()
                     .map(|coin| coin.tx_output)
                     .collect::<Vec<_>>();
-                Ok((mempool_tx.tx.txid, (tx, spent_outputs)))
+                let entry = MempoolTxEntry {
+                    tx,
+                    spent_outputs,
+                    time_first_seen: mempool_tx.time,
+                };
+                Ok((mempool_tx.tx.txid, entry))
             })
             .collect::<Result<HashMap<_, _>>>()?;
         println!("Found {} txs in mempool", txs.len());
@@ -194,8 +199,13 @@ impl SlpIndexer {
                     .into_iter()
                     .map(|coin| coin.tx_output)
                     .collect::<Vec<_>>();
+                let entry = MempoolTxEntry {
+                    tx,
+                    spent_outputs,
+                    time_first_seen: mempool_tx_added.mempool_tx.time,
+                };
                 self.db
-                    .insert_mempool_tx(&mut self.data, mempool_tx.txid, tx, spent_outputs)?;
+                    .insert_mempool_tx(&mut self.data, mempool_tx.txid, entry)?;
             }
             Message::TransactionRemovedFromMempool(mempool_tx_removed) => {
                 println!(
@@ -261,12 +271,19 @@ impl SlpIndexer {
         let db_txs = block
             .txs
             .iter()
-            .map(|tx| TxEntry {
-                txid: tx.tx.txid.clone(),
-                data_pos: tx.data_pos,
-                tx_size: tx.tx.raw.len() as u32,
-                undo_pos: tx.undo_pos,
-                undo_size: tx.undo_size,
+            .map(|tx| {
+                let time_first_seen = match self.db_mempool().tx(&tx.tx.txid) {
+                    Some(entry) => entry.time_first_seen,
+                    None => 0, // indicates unknown
+                };
+                TxEntry {
+                    txid: tx.tx.txid.clone(),
+                    data_pos: tx.data_pos,
+                    tx_size: tx.tx.raw.len() as u32,
+                    undo_pos: tx.undo_pos,
+                    undo_size: tx.undo_size,
+                    time_first_seen,
+                }
             })
             .collect::<Vec<_>>();
         let db_block_txs = BlockTxs {

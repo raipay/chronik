@@ -17,8 +17,8 @@ impl<'a> Txs<'a> {
     }
 
     pub fn rich_tx_by_txid(&self, txid: &Sha256d) -> Result<Option<RichTx>> {
-        if let Some((tx, spent_outputs)) = self.indexer.db_mempool().tx(txid) {
-            let tx = tx.clone().hashed();
+        if let Some(entry) = self.indexer.db_mempool().tx(txid) {
+            let tx = entry.tx.clone().hashed();
             let slp_tx_data = self.indexer.db_mempool_slp().slp_tx_data(txid);
             let mut spends = vec![None; tx.outputs().len()];
             if let Some(spent_set) = self.indexer.db_mempool().spends(txid) {
@@ -51,7 +51,8 @@ impl<'a> Txs<'a> {
                 block: None,
                 slp_tx_data: slp_tx_data.map(|slp_tx_data| slp_tx_data.slp_tx_data.clone().into()),
                 spent_coins: Some(
-                    spent_outputs
+                    entry
+                        .spent_outputs
                         .iter()
                         .map(|tx_output| Coin {
                             tx_output: tx_output.clone(),
@@ -62,6 +63,7 @@ impl<'a> Txs<'a> {
                 spends,
                 slp_burns,
                 slp_error_msg,
+                time_first_seen: entry.time_first_seen,
                 network: self.indexer.network,
             }));
         }
@@ -141,13 +143,14 @@ impl<'a> Txs<'a> {
             spends,
             slp_burns,
             slp_error_msg,
+            time_first_seen: block_tx.entry.time_first_seen,
             network: self.indexer.network,
         }))
     }
 
     pub fn raw_tx_by_id(&self, txid: &Sha256d) -> Result<Option<Bytes>> {
-        if let Some((tx, _)) = self.indexer.db_mempool().tx(txid) {
-            return Ok(Some(tx.ser()));
+        if let Some(entry) = self.indexer.db_mempool().tx(txid) {
+            return Ok(Some(entry.tx.ser()));
         }
         let tx_reader = self.indexer.db().txs()?;
         let block_reader = self.indexer.db().blocks()?;

@@ -1,10 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
-use bitcoinsuite_core::{Sha256d, TxOutput, UnhashedTx};
+use bitcoinsuite_core::Sha256d;
 use bitcoinsuite_error::{ErrorMeta, Result};
 use thiserror::Error;
 
-use crate::{Db, MempoolData, MempoolDeleteMode, MempoolSlpData};
+use crate::{Db, MempoolData, MempoolDeleteMode, MempoolSlpData, MempoolTxEntry};
 
 pub struct MempoolWriter<'a> {
     pub db: &'a Db,
@@ -26,14 +26,15 @@ pub enum MempoolError {
 use self::MempoolError::*;
 
 impl<'a> MempoolWriter<'a> {
-    pub fn insert_mempool_tx(
-        &mut self,
-        txid: Sha256d,
-        tx: UnhashedTx,
-        spent_scripts: Vec<TxOutput>,
-    ) -> Result<()> {
-        self.mempool_slp.insert_mempool_tx(self.db, &txid, &tx)?;
-        self.mempool.insert_mempool_tx(txid, tx, spent_scripts)?;
+    pub fn insert_mempool_tx(&mut self, txid: Sha256d, entry: MempoolTxEntry) -> Result<()> {
+        self.mempool_slp
+            .insert_mempool_tx(self.db, &txid, &entry.tx)?;
+        self.mempool.insert_mempool_tx(
+            txid,
+            entry.tx,
+            entry.spent_outputs,
+            entry.time_first_seen,
+        )?;
         Ok(())
     }
 
@@ -45,21 +46,21 @@ impl<'a> MempoolWriter<'a> {
 
     pub fn insert_mempool_batch_txs(
         &mut self,
-        mut txs: HashMap<Sha256d, (UnhashedTx, Vec<TxOutput>)>,
+        mut txs: HashMap<Sha256d, MempoolTxEntry>,
     ) -> Result<()> {
         let mut next_round = HashMap::new();
         loop {
             let txids = txs.keys().cloned().collect::<HashSet<_>>();
             let mut is_only_orphans = true;
-            'tx_loop: for (txid, (tx, spent_scripts)) in txs {
-                for input in &tx.inputs {
+            'tx_loop: for (txid, entry) in txs {
+                for input in &entry.tx.inputs {
                     if txids.contains(&input.prev_out.txid) {
-                        next_round.insert(txid, (tx, spent_scripts));
+                        next_round.insert(txid, entry);
                         continue 'tx_loop;
                     }
                 }
                 is_only_orphans = false;
-                self.insert_mempool_tx(txid, tx, spent_scripts)?;
+                self.insert_mempool_tx(txid, entry)?;
             }
             if next_round.is_empty() {
                 return Ok(());
@@ -77,11 +78,11 @@ impl<'a> MempoolWriter<'a> {
         loop {
             let mut is_only_parents = true;
             'tx_loop: for &txid in &txids {
-                let (tx, _) = self
+                let entry = self
                     .mempool
                     .tx(txid)
                     .ok_or_else(|| NoSuchTx(txid.clone()))?;
-                for input in &tx.inputs {
+                for input in &entry.tx.inputs {
                     if txids.contains(&input.prev_out.txid) {
                         next_round.insert(txid);
                         continue 'tx_loop;
@@ -116,7 +117,8 @@ mod tests {
     use rocksdb::WriteBatch;
 
     use crate::{
-        BlockTxs, Db, MempoolData, MempoolSlpData, MempoolWriter, SlpWriter, TxEntry, TxWriter,
+        BlockTxs, Db, MempoolData, MempoolSlpData, MempoolTxEntry, MempoolWriter, SlpWriter,
+        TxEntry, TxWriter,
     };
 
     #[test]
@@ -157,6 +159,7 @@ mod tests {
                     tx_size: 0,
                     undo_pos: 0,
                     undo_size: 0,
+                    time_first_seen: 0,
                 })
                 .collect::<Vec<_>>();
             tx_writer.insert_block_txs(
@@ -205,7 +208,11 @@ mod tests {
                 .map(|(txid, tx)| {
                     (
                         txid.clone(),
-                        (tx.clone(), vec![TxOutput::default(); tx.inputs.len()]),
+                        MempoolTxEntry {
+                            tx: tx.clone(),
+                            spent_outputs: vec![TxOutput::default(); tx.inputs.len()],
+                            time_first_seen: 0,
+                        },
                     )
                 })
                 .collect::<HashMap<_, _>>();
