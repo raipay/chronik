@@ -118,16 +118,8 @@ fn test_index_genesis(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
         &[info["bestblockhash"].as_str().unwrap(), "false"],
     )?;
     assert_eq!(hex::encode(&raw_header), block_header_hex);
-    check_tx_indexed(
-        slp_indexer,
-        &get_coinbase_txid(bitcoind, &tip.hash)?,
-        0,
-        170,
-        217,
-        0,
-        0,
-        0,
-    )?;
+    let coinbase_txid = get_coinbase_txid(bitcoind, &tip.hash)?;
+    check_tx_indexed(slp_indexer, &coinbase_txid, 0, 170, 217, 0, 0, 0)?;
     let genesis_payload = hex::decode(
         "04678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e5\
          1ec112de5c384df7ba0b8d578a4c702b6bf11d5f"
@@ -141,6 +133,14 @@ fn test_index_genesis(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
         &genesis_payload,
         [(0, 1)],
     )?;
+    assert_eq!(
+        slp_indexer.blocks().block_txs_by_hash(&block.hash)?,
+        vec![slp_indexer.txs().rich_tx_by_txid(&coinbase_txid)?.unwrap()],
+    );
+    assert_eq!(
+        slp_indexer.blocks().block_txs_by_hash(&block.hash)?,
+        slp_indexer.blocks().block_txs_by_height(0)?,
+    );
     Ok(())
 }
 
@@ -166,20 +166,20 @@ fn test_get_out_of_ibd(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> R
     assert_eq!(tip.hash.to_hex_be(), cur_info["bestblockhash"]);
     assert_eq!(prev_info["initialblockdownload"], true);
     assert_eq!(cur_info["initialblockdownload"], false);
-    check_tx_indexed(
-        slp_indexer,
-        &get_coinbase_txid(bitcoind, &tip.hash)?,
-        1,
-        557,
-        111,
-        0,
-        0,
-        0,
-    )?;
+    let coinbase_txid = get_coinbase_txid(bitcoind, &tip.hash)?;
+    check_tx_indexed(slp_indexer, &coinbase_txid, 1, 557, 111, 0, 0, 0)?;
     let r = &slp_indexer.db().outputs()?;
     let db_utxos = &slp_indexer.db().utxos()?;
     check_pages(r, PayloadPrefix::P2SH, &[0; 20], [&[1]])?;
     check_utxos(db_utxos, PayloadPrefix::P2SH, &[0; 20], [(1, 1)])?;
+    assert_eq!(
+        slp_indexer.blocks().block_txs_by_hash(&tip.hash)?,
+        vec![slp_indexer.txs().rich_tx_by_txid(&coinbase_txid)?.unwrap()],
+    );
+    assert_eq!(
+        slp_indexer.blocks().block_txs_by_hash(&tip.hash)?,
+        slp_indexer.blocks().block_txs_by_height(1)?,
+    );
 
     // catchup finished
     assert!(slp_indexer.catchup_step()?);
@@ -279,16 +279,8 @@ fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Resu
     assert_eq!(block1_tip.hash, block1.header.calc_hash());
     assert_eq!(block1_tip.prev_hash, new_tip.hash);
     assert_eq!(slp_indexer.db().txs()?.by_txid(&old_txid)?, None);
-    check_tx_indexed(
-        slp_indexer,
-        &get_coinbase_txid(bitcoind, &block1_tip.hash)?,
-        1,
-        838,
-        180,
-        0,
-        0,
-        0,
-    )?;
+    let coinbase_txid1 = get_coinbase_txid(bitcoind, &block1_tip.hash)?;
+    check_tx_indexed(slp_indexer, &coinbase_txid1, 1, 838, 180, 0, 0, 0)?;
     check_pages(
         &slp_indexer.db().outputs()?,
         PayloadPrefix::P2SH,
@@ -301,22 +293,18 @@ fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Resu
         anyone_payload,
         [(1, 1)],
     )?;
+    assert_eq!(
+        slp_indexer.blocks().block_txs_by_hash(&block1_tip.hash)?,
+        vec![slp_indexer.txs().rich_tx_by_txid(&coinbase_txid1)?.unwrap()],
+    );
 
     // next message is BlockConnected for block2
     slp_indexer.process_next_msg()?;
     let block2_tip = slp_indexer.db().blocks()?.tip()?.unwrap();
     assert_eq!(block2_tip.hash, block2.header.calc_hash());
     assert_eq!(block2_tip.prev_hash, block1_tip.hash);
-    check_tx_indexed(
-        slp_indexer,
-        &get_coinbase_txid(bitcoind, &block2_tip.hash)?,
-        2,
-        1188,
-        180,
-        0,
-        0,
-        0,
-    )?;
+    let coinbase_txid2 = get_coinbase_txid(bitcoind, &block2_tip.hash)?;
+    check_tx_indexed(slp_indexer, &coinbase_txid2, 2, 1188, 180, 0, 0, 0)?;
     check_pages(
         &slp_indexer.db().outputs()?,
         PayloadPrefix::P2SH,
@@ -329,6 +317,10 @@ fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Resu
         anyone_payload,
         [(1, 1), (2, 1)],
     )?;
+    assert_eq!(
+        slp_indexer.blocks().block_txs_by_hash(&block2_tip.hash)?,
+        vec![slp_indexer.txs().rich_tx_by_txid(&coinbase_txid2)?.unwrap()],
+    );
 
     Ok(())
 }

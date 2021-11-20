@@ -559,6 +559,18 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
     assert_eq!(slp_indexer.txs().raw_tx_by_id(&txid1)?, Some(tx1.ser()));
     assert_eq!(slp_indexer.txs().raw_tx_by_id(&txid2)?, Some(tx2.ser()));
     assert_eq!(slp_indexer.txs().raw_tx_by_id(&txid3)?, Some(tx3.ser()));
+    assert_eq!(
+        slp_indexer
+            .blocks()
+            .block_txs_by_hash(&block1.header.calc_hash())?[1..],
+        [rich_tx1.clone()],
+    );
+    assert_eq!(
+        slp_indexer
+            .blocks()
+            .block_txs_by_hash(&block1.header.calc_hash())?,
+        slp_indexer.blocks().block_txs_by_height(111)?,
+    );
 
     // modify tx3
     tx3.outputs[1].value -= 1;
@@ -653,8 +665,23 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
     assert_eq!(rich_tx3.timestamp(), block2.header.timestamp);
     assert_eq!(slp_indexer.txs().rich_tx_by_txid(&txid3)?, None);
     assert_eq!(
-        slp_indexer.txs().rich_tx_by_txid(&txid3_modified)?,
-        Some(rich_tx3)
+        slp_indexer.txs().rich_tx_by_txid(&txid3_modified)?.as_ref(),
+        Some(&rich_tx3)
+    );
+
+    let mut expected_txs = [rich_tx2, rich_tx3];
+    expected_txs.sort_by_key(|tx| tx.txid.clone());
+    assert_eq!(
+        slp_indexer
+            .blocks()
+            .block_txs_by_hash(&block2.header.calc_hash())?[1..],
+        expected_txs,
+    );
+    assert_eq!(
+        slp_indexer
+            .blocks()
+            .block_txs_by_hash(&block2.header.calc_hash())?,
+        slp_indexer.blocks().block_txs_by_height(112)?,
     );
 
     Ok(())

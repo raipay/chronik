@@ -4,7 +4,7 @@ use bitcoinsuite_core::{
 };
 use bitcoinsuite_error::Result;
 use bitcoinsuite_slp::{RichTx, RichTxBlock, SlpBurn};
-use chronik_rocksdb::{BlockTx, MempoolTxEntry, TxNum};
+use chronik_rocksdb::{Block, BlockTx, MempoolTxEntry, TxNum};
 
 use crate::SlpIndexer;
 
@@ -79,11 +79,7 @@ impl<'a> Txs<'a> {
     }
 
     pub(crate) fn rich_block_tx(&self, tx_num: TxNum, block_tx: &BlockTx) -> Result<RichTx> {
-        let txid = &block_tx.entry.txid;
-        let tx_reader = self.indexer.db().txs()?;
         let block_reader = self.indexer.db().blocks()?;
-        let spend_reader = self.indexer.db().spends()?;
-        let slp_reader = self.indexer.db().slp()?;
         let block = block_reader
             .by_height(block_tx.block_height)?
             .expect("Inconsistent db");
@@ -92,8 +88,6 @@ impl<'a> Txs<'a> {
             block_tx.entry.data_pos,
             block_tx.entry.tx_size,
         )?;
-        let mut raw_tx = Bytes::from_bytes(raw_tx);
-        let tx = UnhashedTx::deser(&mut raw_tx)?;
         let spent_coins = match block_tx.entry.undo_pos {
             0 => None,
             _ => {
@@ -103,15 +97,29 @@ impl<'a> Txs<'a> {
                     block_tx.entry.undo_size,
                 )?;
                 let mut undo_data = Bytes::from_bytes(undo_data);
-                let _num_inputs = read_compact_size(&mut undo_data)?;
-                let spent_outputs = tx
-                    .inputs
-                    .iter()
+                let num_inputs = read_compact_size(&mut undo_data)?;
+                let spent_coins = (0..num_inputs)
                     .map(|_| Ok(read_undo_coin(self.indexer.ecc.as_ref(), &mut undo_data)?))
                     .collect::<Result<Vec<_>>>()?;
-                Some(spent_outputs)
+                Some(spent_coins)
             }
         };
+        self.rich_block_tx_prefetched(tx_num, block_tx, raw_tx.into(), spent_coins, &block)
+    }
+
+    pub(crate) fn rich_block_tx_prefetched(
+        &self,
+        tx_num: TxNum,
+        block_tx: &BlockTx,
+        mut raw_tx: Bytes,
+        spent_coins: Option<Vec<Coin>>,
+        block: &Block,
+    ) -> Result<RichTx> {
+        let txid = &block_tx.entry.txid;
+        let spend_reader = self.indexer.db().spends()?;
+        let tx_reader = self.indexer.db().txs()?;
+        let slp_reader = self.indexer.db().slp()?;
+        let tx = UnhashedTx::deser(&mut raw_tx)?;
         let mut spends = vec![None; tx.outputs.len()];
         for spend_entry in spend_reader.spends_by_tx_num(tx_num)? {
             spends[spend_entry.out_idx as usize] = Some(OutPoint {
@@ -145,7 +153,7 @@ impl<'a> Txs<'a> {
             txid: txid.clone(),
             block: Some(RichTxBlock {
                 height: block_tx.block_height,
-                hash: block.hash,
+                hash: block.hash.clone(),
                 timestamp: block.timestamp,
             }),
             slp_tx_data: slp_tx_data.map(|slp_tx_data| slp_tx_data.into()),
