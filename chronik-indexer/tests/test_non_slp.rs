@@ -14,8 +14,8 @@ use bitcoinsuite_error::Result;
 use bitcoinsuite_test_utils::bin_folder;
 use chronik_indexer::SlpIndexer;
 use chronik_rocksdb::{
-    BlockTx, Db, IndexDb, IndexMemData, OutpointEntry, OutputsReader, PayloadPrefix, TxEntry,
-    UtxosReader,
+    BlockTx, Db, IndexDb, IndexMemData, OutpointEntry, OutputsConf, OutputsReader, PayloadPrefix,
+    TxEntry, UtxosReader,
 };
 use pretty_assertions::assert_eq;
 use tempdir::TempDir;
@@ -42,8 +42,9 @@ fn test_non_slp() -> Result<()> {
     instance.wait_for_ready()?;
     let pub_interface = PubInterface::open(&pub_url)?;
     let rpc_interface = RpcInterface::open(&rpc_url)?;
+    let outputs_conf = OutputsConf { page_size: 1000 };
     let db = Db::open(dir.path().join("index.rocksdb"))?;
-    let db = IndexDb::new(db);
+    let db = IndexDb::new(db, outputs_conf);
     let bitcoin_cli = instance.cli();
     let cache = IndexMemData::new(10);
     let mut slp_indexer = SlpIndexer::new(

@@ -6,7 +6,7 @@ use bitcoinsuite_core::{
 };
 use bitcoinsuite_error::Result;
 use bitcoinsuite_test_utils_blockchain::build_tx;
-use chronik_rocksdb::{Block, BlockTxs, Db, IndexDb, IndexMemData, TxEntry};
+use chronik_rocksdb::{Block, BlockTxs, Db, IndexDb, IndexMemData, OutputsConf, TxEntry};
 use rand::{distributions::WeightedIndex, prelude::Distribution, Rng, SeedableRng};
 use tempdir::TempDir;
 
@@ -173,8 +173,9 @@ fn main() -> Result<()> {
     println!("Inserting blocks...");
     println!("Cache size: {}", cache_size);
     let dir = TempDir::new("chronik-rocksdb-bench")?;
+    let outputs_conf = OutputsConf { page_size: 1000 };
     let db = Db::open(dir.path().join("index.rocksdb"))?;
-    let db = IndexDb::new(db);
+    let db = IndexDb::new(db, outputs_conf);
     let mut data = IndexMemData::new(cache_size);
     let t = Instant::now();
     for (block_height, (block, block_spent_scripts)) in blocks.iter().enumerate() {

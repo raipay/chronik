@@ -34,6 +34,7 @@ pub struct OutputsWriter<'a> {
 pub struct OutputsReader<'a> {
     db: &'a Db,
     cf_outputs: &'a CF,
+    conf: OutputsConf,
 }
 
 pub struct OutputsWriterCache {
@@ -159,9 +160,17 @@ fn prepare_tx_nums_by_payload<'b>(
 }
 
 impl<'a> OutputsReader<'a> {
-    pub fn new(db: &'a Db) -> Result<Self> {
+    pub fn new(db: &'a Db, conf: OutputsConf) -> Result<Self> {
         let cf_outputs = db.cf(CF_OUTPUTS)?;
-        Ok(OutputsReader { db, cf_outputs })
+        Ok(OutputsReader {
+            db,
+            cf_outputs,
+            conf,
+        })
+    }
+
+    pub fn page_size(&self) -> usize {
+        self.conf.page_size
     }
 
     pub fn num_pages_by_payload(
@@ -288,8 +297,8 @@ mod test {
         let db = Db::open(tempdir.path())?;
         let mut cache = OutputsWriterCache::with_capacity(4);
         let conf = OutputsConf { page_size: 4 };
-        let outputs_writer = OutputsWriter::new(&db, conf)?;
-        let outputs_reader = OutputsReader::new(&db)?;
+        let outputs_writer = OutputsWriter::new(&db, conf.clone())?;
+        let outputs_reader = OutputsReader::new(&db, conf)?;
         let r = &outputs_reader;
         let (script1, payload1) = (Script::p2pkh(&ShaRmd160::new([1; 20])), [1; 20]);
         let (script2, payload2) = (Script::p2pkh(&ShaRmd160::new([2; 20])), [2; 20]);

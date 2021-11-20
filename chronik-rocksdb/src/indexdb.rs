@@ -25,6 +25,7 @@ pub struct IndexTimings {
 pub struct IndexDb {
     db: Db,
     timings: RwLock<IndexTimings>,
+    outputs_conf: OutputsConf,
 }
 
 pub struct IndexMemData {
@@ -43,10 +44,11 @@ pub enum IndexDbError {
 use self::IndexDbError::*;
 
 impl IndexDb {
-    pub fn new(db: Db) -> Self {
+    pub fn new(db: Db, outputs_conf: OutputsConf) -> Self {
         IndexDb {
             db,
             timings: Default::default(),
+            outputs_conf,
         }
     }
 
@@ -59,7 +61,7 @@ impl IndexDb {
     }
 
     pub fn outputs(&self) -> Result<OutputsReader> {
-        OutputsReader::new(&self.db)
+        OutputsReader::new(&self.db, self.outputs_conf.clone())
     }
 
     pub fn utxos(&self) -> Result<UtxosReader> {
@@ -97,8 +99,7 @@ impl IndexDb {
         let mut timings = self.timings.write().unwrap();
         let block_writer = BlockWriter::new(&self.db)?;
         let tx_writer = TxWriter::new(&self.db)?;
-        let conf = OutputsConf { page_size: 1000 };
-        let output_writer = OutputsWriter::new(&self.db, conf)?;
+        let output_writer = OutputsWriter::new(&self.db, self.outputs_conf.clone())?;
         let utxo_writer = UtxosWriter::new(&self.db)?;
         let spends_writer = SpendsWriter::new(&self.db)?;
         let slp_writer = SlpWriter::new(&self.db)?;

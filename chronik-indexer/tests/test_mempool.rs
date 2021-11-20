@@ -19,7 +19,7 @@ use bitcoinsuite_slp::{
 use bitcoinsuite_test_utils::bin_folder;
 use bitcoinsuite_test_utils_blockchain::build_tx;
 use chronik_indexer::SlpIndexer;
-use chronik_rocksdb::{Db, IndexDb, IndexMemData, MempoolTxEntry, PayloadPrefix};
+use chronik_rocksdb::{Db, IndexDb, IndexMemData, MempoolTxEntry, OutputsConf, PayloadPrefix};
 use pretty_assertions::{assert_eq, assert_ne};
 use tempdir::TempDir;
 
@@ -45,8 +45,9 @@ fn test_mempool() -> Result<()> {
     instance.wait_for_ready()?;
     let pub_interface = PubInterface::open(&pub_url)?;
     let rpc_interface = RpcInterface::open(&rpc_url)?;
+    let outputs_conf = OutputsConf { page_size: 7 };
     let db = Db::open(dir.path().join("index.rocksdb"))?;
-    let db = IndexDb::new(db);
+    let db = IndexDb::new(db, outputs_conf);
     let bitcoind = instance.cli();
     let cache = IndexMemData::new(10);
     let mut slp_indexer = SlpIndexer::new(
