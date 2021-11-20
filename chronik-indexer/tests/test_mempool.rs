@@ -59,27 +59,65 @@ fn test_mempool() -> Result<()> {
         Network::XPI,
         Arc::new(EccSecp256k1::default()),
     )?;
-    bitcoind.cmd_string("setmocktime", &["1600000000"])?;
+    bitcoind.cmd_string("setmocktime", &["2100000000"])?;
     test_index_mempool(&mut slp_indexer, bitcoind)?;
     instance.cleanup()?;
     Ok(())
 }
 
 fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Result<()> {
+    use PayloadPrefix::P2SH;
     let anyone_script = Script::from_slice(&[0x51]);
     let anyone_hash = ShaRmd160::digest(anyone_script.bytecode().clone());
+    let anyone_slice = anyone_hash.as_slice();
     let anyone_address = CashAddress::from_hash(BCHREG, AddressType::P2SH, anyone_hash.clone());
+
+    assert_eq!(
+        slp_indexer
+            .script_history()
+            .rev_history_num_pages(P2SH, anyone_slice, 4)?,
+        0,
+    );
+
     bitcoind.cmd_json("generatetoaddress", &["10", anyone_address.as_str()])?;
+    while !slp_indexer.catchup_step()? {}
+    assert_eq!(
+        slp_indexer
+            .script_history()
+            .rev_history_num_pages(P2SH, anyone_slice, 4)?,
+        3,
+    );
+
     let burn_address = CashAddress::from_hash(BCHREG, AddressType::P2SH, ShaRmd160::new([0; 20]));
     bitcoind.cmd_json("generatetoaddress", &["100", burn_address.as_str()])?;
     while !slp_indexer.catchup_step()? {}
     slp_indexer.leave_catchup()?;
 
-    let utxo_entries = slp_indexer
-        .db()
-        .utxos()?
-        .utxos(PayloadPrefix::P2SH, anyone_hash.as_slice())?;
+    let utxo_entries = slp_indexer.db().utxos()?.utxos(P2SH, anyone_slice)?;
     assert_eq!(utxo_entries.len(), 10);
+
+    {
+        use TxIdentifier::*;
+        let addrs = slp_indexer.script_history();
+        let db_outputs = slp_indexer.db().outputs()?;
+        assert_eq!(addrs.num_mempool_txs(P2SH, anyone_slice), 0);
+        assert_eq!(
+            db_outputs.page_txs(0, P2SH, anyone_slice)?,
+            vec![1, 2, 3, 4, 5, 6, 7]
+        );
+        assert_eq!(db_outputs.page_txs(1, P2SH, anyone_slice)?, vec![8, 9, 10]);
+        check_rev_history_pages(
+            slp_indexer,
+            P2SH,
+            anyone_slice,
+            4,
+            [
+                &[N(10), N(9), N(8), N(7)],
+                &[N(6), N(5), N(4), N(3)],
+                &[N(2), N(1)],
+            ],
+        )?;
+    }
 
     let mut utxos = Vec::new();
     for utxo_entry in utxo_entries {
@@ -130,7 +168,7 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
         spends: vec![None, None],
         slp_burns: vec![None],
         slp_error_msg: None,
-        time_first_seen: 1_600_000_000,
+        time_first_seen: 2_100_000_000,
         network: Network::XPI,
     };
     slp_indexer.process_next_msg()?;
@@ -142,7 +180,7 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
                 value,
                 script: anyone_script.to_p2sh(),
             }],
-            time_first_seen: 1_600_000_000,
+            time_first_seen: 2_100_000_000,
         }),
     );
     assert_eq!(slp_indexer.db_mempool_slp().slp_tx_data(&txid1), None);
@@ -152,7 +190,24 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
         Some(rich_tx1.clone())
     );
     assert_eq!(slp_indexer.txs().raw_tx_by_id(&txid1)?, Some(tx1.ser()));
+    {
+        use TxIdentifier::*;
+        let addrs = slp_indexer.script_history();
+        assert_eq!(addrs.num_mempool_txs(P2SH, anyone_slice), 1);
+        check_rev_history_pages(
+            slp_indexer,
+            P2SH,
+            anyone_slice,
+            4,
+            [
+                &[H(&txid1), N(10), N(9), N(8)],
+                &[N(7), N(6), N(5), N(4)],
+                &[N(3), N(2), N(1)],
+            ],
+        )?;
+    }
 
+    bitcoind.cmd_string("setmocktime", &["2100000001"])?;
     let (outpoint, value) = utxos.pop().unwrap();
     let tx2 = build_tx(
         outpoint,
@@ -202,7 +257,7 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
         spends: vec![None, None],
         slp_burns: vec![None],
         slp_error_msg: None,
-        time_first_seen: 1_600_000_000,
+        time_first_seen: 2_100_000_001,
         network: Network::XPI,
     };
     slp_indexer.process_next_msg()?;
@@ -214,7 +269,7 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
                 value,
                 script: anyone_script.to_p2sh(),
             }],
-            time_first_seen: 1_600_000_000,
+            time_first_seen: 2_100_000_001,
         }),
     );
     assert_eq!(
@@ -239,7 +294,7 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
                 value,
                 script: anyone_script.to_p2sh(),
             }],
-            time_first_seen: 1_600_000_000,
+            time_first_seen: 2_100_000_001,
         }),
     );
     assert_eq!(
@@ -257,7 +312,24 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
         Some(rich_tx2.clone())
     );
     assert_eq!(slp_indexer.txs().raw_tx_by_id(&txid2)?, Some(tx2.ser()));
+    {
+        use TxIdentifier::*;
+        let addrs = slp_indexer.script_history();
+        assert_eq!(addrs.num_mempool_txs(P2SH, anyone_slice), 2);
+        check_rev_history_pages(
+            slp_indexer,
+            P2SH,
+            anyone_slice,
+            4,
+            [
+                &[H(&txid2), H(&txid1), N(10), N(9)],
+                &[N(8), N(7), N(6), N(5)],
+                &[N(4), N(3), N(2), N(1)],
+            ],
+        )?;
+    }
 
+    bitcoind.cmd_string("setmocktime", &["2100000002"])?;
     let (outpoint, value) = utxos.pop().unwrap();
     let send_value = leftover_value * 2 + value - 20_000;
     let mut tx3 = UnhashedTx {
@@ -341,7 +413,7 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
         spends: vec![None, None],
         slp_burns: vec![None, None, None],
         slp_error_msg: None,
-        time_first_seen: 1_600_000_000,
+        time_first_seen: 2_100_000_002,
         network: Network::XPI,
     };
     slp_indexer.process_next_msg()?;
@@ -363,7 +435,7 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
                     script: anyone_script.to_p2sh(),
                 },
             ],
-            time_first_seen: 1_600_000_000,
+            time_first_seen: 2_100_000_002,
         }),
     );
     assert_eq!(
@@ -395,6 +467,51 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
         slp_indexer.txs().rich_tx_by_txid(&txid2)?,
         Some(rich_tx2.clone())
     );
+    {
+        use TxIdentifier::*;
+        let addrs = slp_indexer.script_history();
+        assert_eq!(addrs.num_mempool_txs(P2SH, anyone_slice), 3);
+        check_rev_history_pages(
+            slp_indexer,
+            P2SH,
+            anyone_slice,
+            4,
+            [
+                &[H(&txid3), H(&txid2), H(&txid1), N(10)],
+                &[N(9), N(8), N(7), N(6)],
+                &[N(5), N(4), N(3), N(2)],
+                &[N(1)],
+            ],
+        )?;
+        check_rev_history_pages(
+            slp_indexer,
+            P2SH,
+            anyone_slice,
+            3,
+            [
+                &[H(&txid3), H(&txid2), H(&txid1)],
+                &[N(10), N(9), N(8)],
+                &[N(7), N(6), N(5)],
+                &[N(4), N(3), N(2)],
+                &[N(1)],
+            ],
+        )?;
+        check_rev_history_pages(
+            slp_indexer,
+            P2SH,
+            anyone_slice,
+            2,
+            [
+                &[H(&txid3), H(&txid2)],
+                &[H(&txid1), N(10)],
+                &[N(9), N(8)],
+                &[N(7), N(6)],
+                &[N(5), N(4)],
+                &[N(3), N(2)],
+                &[N(1)],
+            ],
+        )?;
+    }
 
     let tip = slp_indexer.db().blocks()?.tip()?.unwrap();
     let tx1 = tx1.hashed();
@@ -423,6 +540,7 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
     rich_tx1.block = Some(RichTxBlock {
         height: 111,
         hash: block1.header.calc_hash(),
+        timestamp: block1.header.timestamp,
     });
     rich_tx1.spent_coins.as_mut().unwrap()[0].height = Some(10);
     rich_tx1.spent_coins.as_mut().unwrap()[0].is_coinbase = true;
@@ -500,6 +618,7 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
         slp_indexer.txs().rich_tx_by_txid(&txid1)?,
         Some(rich_tx1.clone())
     );
+    assert_eq!(rich_tx1.timestamp(), 2_100_000_000);
     rich_tx2.spends[1] = Some(OutPoint {
         txid: txid3_modified.clone(),
         out_idx: 2,
@@ -507,9 +626,11 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
     rich_tx2.block = Some(RichTxBlock {
         height: 112,
         hash: block2.header.calc_hash(),
+        timestamp: block2.header.timestamp,
     });
     rich_tx2.spent_coins.as_mut().unwrap()[0].height = Some(9);
     rich_tx2.spent_coins.as_mut().unwrap()[0].is_coinbase = true;
+    assert_eq!(rich_tx2.timestamp(), 2_100_000_001);
     assert_eq!(
         slp_indexer.txs().rich_tx_by_txid(&txid2)?,
         Some(rich_tx2.clone())
@@ -519,6 +640,7 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
     rich_tx3.block = Some(RichTxBlock {
         height: 112,
         hash: block2.header.calc_hash(),
+        timestamp: block2.header.timestamp,
     });
     {
         let spent_coins = rich_tx3.spent_coins.as_mut().unwrap();
@@ -528,11 +650,67 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
         spent_coins[2].height = Some(112);
     }
     rich_tx3.time_first_seen = 0; // tx not first seen in mempool
+    assert_eq!(rich_tx3.timestamp(), block2.header.timestamp);
     assert_eq!(slp_indexer.txs().rich_tx_by_txid(&txid3)?, None);
     assert_eq!(
         slp_indexer.txs().rich_tx_by_txid(&txid3_modified)?,
         Some(rich_tx3)
     );
 
+    Ok(())
+}
+
+enum TxIdentifier<'a> {
+    N(u64),
+    H(&'a Sha256d),
+}
+
+fn check_rev_history_pages<const M: usize>(
+    slp_indexer: &SlpIndexer,
+    prefix: PayloadPrefix,
+    payload: &[u8],
+    page_size: usize,
+    tx_id_pages: [&[TxIdentifier]; M],
+) -> Result<()> {
+    let addrs = slp_indexer.script_history();
+    assert_eq!(addrs.rev_history_num_pages(prefix, payload, page_size)?, M);
+    let tx_reader = slp_indexer.db().txs()?;
+    for (page_num, tx_ids) in tx_id_pages.into_iter().enumerate() {
+        let actual_rich_txs = addrs.rev_history_page(prefix, payload, page_num, page_size)?;
+        let expected_txids_and_heights = tx_ids
+            .iter()
+            .map(|id| match *id {
+                TxIdentifier::N(tx_num) => {
+                    let block_tx = tx_reader.by_tx_num(tx_num)?.unwrap();
+                    Ok((Some(block_tx.block_height), block_tx.entry.txid))
+                }
+                TxIdentifier::H(txid) => {
+                    let block_height = slp_indexer
+                        .txs()
+                        .rich_tx_by_txid(txid)?
+                        .unwrap()
+                        .block
+                        .map(|block| block.height);
+                    Ok((block_height, txid.clone()))
+                }
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let actual_txids_and_heights = actual_rich_txs
+            .iter()
+            .map(|tx| (tx.block.as_ref().map(|block| block.height), tx.txid.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(expected_txids_and_heights, actual_txids_and_heights);
+        let expected_rich_txs = tx_ids
+            .iter()
+            .map(|id| {
+                let txid = match *id {
+                    TxIdentifier::N(tx_num) => tx_reader.txid_by_tx_num(tx_num)?.unwrap(),
+                    TxIdentifier::H(txid) => txid.clone(),
+                };
+                Ok(slp_indexer.txs().rich_tx_by_txid(&txid)?.unwrap())
+            })
+            .collect::<Result<Vec<_>>>()?;
+        assert_eq!(actual_rich_txs, expected_rich_txs);
+    }
     Ok(())
 }

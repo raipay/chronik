@@ -10,7 +10,7 @@ use chronik_rocksdb::{
     Block, BlockTxs, IndexDb, IndexMemData, MempoolData, MempoolSlpData, MempoolTxEntry, TxEntry,
 };
 
-use crate::{txs::Txs, Blocks};
+use crate::{txs::Txs, Blocks, ScriptHistory};
 
 pub struct SlpIndexer {
     pub(crate) db: IndexDb,
@@ -238,6 +238,10 @@ impl SlpIndexer {
 
     pub fn blocks(&self) -> Blocks {
         Blocks::new(self)
+    }
+
+    pub fn script_history(&self) -> ScriptHistory {
+        ScriptHistory::new(self)
     }
 
     fn _block_txs(block: &bitcoinsuite_bitcoind_nng::Block) -> Result<Vec<UnhashedTx>> {

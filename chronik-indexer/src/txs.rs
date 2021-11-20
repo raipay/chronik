@@ -4,6 +4,7 @@ use bitcoinsuite_core::{
 };
 use bitcoinsuite_error::Result;
 use bitcoinsuite_slp::{RichTx, RichTxBlock, SlpBurn};
+use chronik_rocksdb::{BlockTx, MempoolTxEntry, TxNum};
 
 use crate::SlpIndexer;
 
@@ -18,63 +19,71 @@ impl<'a> Txs<'a> {
 
     pub fn rich_tx_by_txid(&self, txid: &Sha256d) -> Result<Option<RichTx>> {
         if let Some(entry) = self.indexer.db_mempool().tx(txid) {
-            let tx = entry.tx.clone().hashed();
-            let slp_tx_data = self.indexer.db_mempool_slp().slp_tx_data(txid);
-            let mut spends = vec![None; tx.outputs().len()];
-            if let Some(spent_set) = self.indexer.db_mempool().spends(txid) {
-                for &(out_idx, ref txid, input_idx) in spent_set {
-                    spends[out_idx as usize] = Some(OutPoint {
-                        txid: txid.clone(),
-                        out_idx: input_idx,
-                    })
-                }
-            }
-            let (slp_burns, slp_error_msg) = match slp_tx_data {
-                Some(slp_tx_data) => (slp_tx_data.slp_burns.clone(), None),
-                None => {
-                    let slp_burns = tx
-                        .inputs()
-                        .iter()
-                        .map(|input| self.output_token_burn(&input.prev_out))
-                        .collect::<Result<Vec<_>>>()?;
-                    let slp_error_msg = self
-                        .indexer
-                        .db_mempool_slp()
-                        .slp_tx_error(txid)
-                        .map(|error| error.to_string());
-                    (slp_burns, slp_error_msg)
-                }
-            };
-            return Ok(Some(RichTx {
-                tx,
-                txid: txid.clone(),
-                block: None,
-                slp_tx_data: slp_tx_data.map(|slp_tx_data| slp_tx_data.slp_tx_data.clone().into()),
-                spent_coins: Some(
-                    entry
-                        .spent_outputs
-                        .iter()
-                        .map(|tx_output| Coin {
-                            tx_output: tx_output.clone(),
-                            ..Default::default()
-                        })
-                        .collect(),
-                ),
-                spends,
-                slp_burns,
-                slp_error_msg,
-                time_first_seen: entry.time_first_seen,
-                network: self.indexer.network,
-            }));
+            return Ok(Some(self.rich_mempool_tx(txid, entry)?));
         }
+        match self.indexer.db().txs()?.tx_and_num_by_txid(txid)? {
+            Some((tx_num, block_tx)) => Ok(Some(self.rich_block_tx(tx_num, &block_tx)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) fn rich_mempool_tx(&self, txid: &Sha256d, entry: &MempoolTxEntry) -> Result<RichTx> {
+        let tx = entry.tx.clone().hashed();
+        let slp_tx_data = self.indexer.db_mempool_slp().slp_tx_data(txid);
+        let mut spends = vec![None; tx.outputs().len()];
+        if let Some(spent_set) = self.indexer.db_mempool().spends(txid) {
+            for &(out_idx, ref txid, input_idx) in spent_set {
+                spends[out_idx as usize] = Some(OutPoint {
+                    txid: txid.clone(),
+                    out_idx: input_idx,
+                })
+            }
+        }
+        let (slp_burns, slp_error_msg) = match slp_tx_data {
+            Some(slp_tx_data) => (slp_tx_data.slp_burns.clone(), None),
+            None => {
+                let slp_burns = tx
+                    .inputs()
+                    .iter()
+                    .map(|input| self.output_token_burn(&input.prev_out))
+                    .collect::<Result<Vec<_>>>()?;
+                let slp_error_msg = self
+                    .indexer
+                    .db_mempool_slp()
+                    .slp_tx_error(txid)
+                    .map(|error| error.to_string());
+                (slp_burns, slp_error_msg)
+            }
+        };
+        return Ok(RichTx {
+            tx,
+            txid: txid.clone(),
+            block: None,
+            slp_tx_data: slp_tx_data.map(|slp_tx_data| slp_tx_data.slp_tx_data.clone().into()),
+            spent_coins: Some(
+                entry
+                    .spent_outputs
+                    .iter()
+                    .map(|tx_output| Coin {
+                        tx_output: tx_output.clone(),
+                        ..Default::default()
+                    })
+                    .collect(),
+            ),
+            spends,
+            slp_burns,
+            slp_error_msg,
+            time_first_seen: entry.time_first_seen,
+            network: self.indexer.network,
+        });
+    }
+
+    pub(crate) fn rich_block_tx(&self, tx_num: TxNum, block_tx: &BlockTx) -> Result<RichTx> {
+        let txid = &block_tx.entry.txid;
         let tx_reader = self.indexer.db().txs()?;
         let block_reader = self.indexer.db().blocks()?;
         let spend_reader = self.indexer.db().spends()?;
         let slp_reader = self.indexer.db().slp()?;
-        let (tx_num, block_tx) = match tx_reader.tx_and_num_by_txid(txid)? {
-            Some(tuple) => tuple,
-            None => return Ok(None),
-        };
         let block = block_reader
             .by_height(block_tx.block_height)?
             .expect("Inconsistent db");
@@ -131,12 +140,13 @@ impl<'a> Txs<'a> {
             ),
         };
         let slp_error_msg = slp_reader.slp_invalid_message_tx_num(tx_num)?;
-        Ok(Some(RichTx {
+        Ok(RichTx {
             tx: tx.hashed(),
             txid: txid.clone(),
             block: Some(RichTxBlock {
                 height: block_tx.block_height,
                 hash: block.hash,
+                timestamp: block.timestamp,
             }),
             slp_tx_data: slp_tx_data.map(|slp_tx_data| slp_tx_data.into()),
             spent_coins,
@@ -145,7 +155,7 @@ impl<'a> Txs<'a> {
             slp_error_msg,
             time_first_seen: block_tx.entry.time_first_seen,
             network: self.indexer.network,
-        }))
+        })
     }
 
     pub fn raw_tx_by_id(&self, txid: &Sha256d) -> Result<Option<Bytes>> {
@@ -171,6 +181,9 @@ impl<'a> Txs<'a> {
     }
 
     fn output_token_burn(&self, outpoint: &OutPoint) -> Result<Option<Box<SlpBurn>>> {
+        if outpoint.is_coinbase() {
+            return Ok(None);
+        }
         if let Some(slp_tx_data) = self.indexer.db_mempool_slp().slp_tx_data(&outpoint.txid) {
             return Ok(Some(Box::new(SlpBurn {
                 token: slp_tx_data
