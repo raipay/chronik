@@ -176,7 +176,7 @@ impl<'a> OutputsReader<'a> {
         );
         let num_pages = iterator
             .take_while(|(key, _)| {
-                key.get(..script_payload.len()) == Some(script_payload.as_slice())
+                key.get(..key.len() - PAGE_NUM_SIZE) == Some(script_payload.as_slice())
             })
             .filter(|(_, value)| !value.is_empty())
             .count();
@@ -229,12 +229,12 @@ impl OutputsWriterCache {
             .iterator_cf(cf, IteratorMode::From(&last_key, Direction::Reverse));
         let (key, value) = loop {
             match iterator.next() {
-                Some((key, value)) => {
+                Some((key, value)) if &key[..key.len() - PAGE_NUM_SIZE] == payload => {
                     if !value.is_empty() {
                         break (key, value);
                     }
                 }
-                None => {
+                _ => {
                     if self.capacity > 0 {
                         self.num_outputs_by_script.put(payload.to_vec(), 0);
                     }
@@ -302,6 +302,8 @@ mod test {
             [7; 33],
             [8; 32],
         );
+        let (script9, payload9) = (Script::p2sh(&ShaRmd160::new([9; 20])), [9; 20]);
+        let (script10, payload10) = (Script::p2sh(&ShaRmd160::new([10; 20])), [10; 20]);
         let txs_block1: &[(&[_], &[_])] = &[(&[], &[&script1, &script2])];
         let txs_block2: &[(&[_], &[_])] = &[
             (&[], &[&script1, &script2, &script1, &script1]),
@@ -313,7 +315,15 @@ mod test {
             (&[], &[&script6, &script1]),
             (&[(3, 1), (0, 1)], &[&script7, &script1]),
         ];
-        let txs_blocks = &[txs_block1, txs_block2, txs_block3];
+        let txs_block4: &[(&[(i32, u32)], &[_])] = &[
+            (&[], &[&script10]),
+            (&[], &[&script10]),
+            (&[], &[&script10]),
+            (&[], &[&script10]),
+            (&[], &[&script10]),
+            (&[], &[&script9]),
+        ];
+        let txs_blocks = &[txs_block1, txs_block2, txs_block3, txs_block4];
         let mut blocks = Vec::new();
         let mut num_txs: TxNum = 0;
         for &txs_block in txs_blocks {
@@ -447,6 +457,15 @@ mod test {
             check_pages(r, P2SH, &payload3, [])?;
             check_pages(r, P2SH, &payload4, [])?;
             check_pages(r, P2PK, &payload5, [])?;
+        }
+        {
+            // Test with disabled cache
+            connect_block(0, &mut OutputsWriterCache::with_capacity(0))?;
+            connect_block(1, &mut OutputsWriterCache::with_capacity(0))?;
+            connect_block(2, &mut OutputsWriterCache::with_capacity(0))?;
+            connect_block(3, &mut OutputsWriterCache::with_capacity(0))?;
+            check_pages(r, P2SH, &payload9, [&[12]])?;
+            check_pages(r, P2SH, &payload10, [&[7, 8, 9, 10], &[11]])?;
         }
         Ok(())
     }
