@@ -20,7 +20,7 @@ use bitcoinsuite_slp::{
 use bitcoinsuite_test_utils::bin_folder;
 use bitcoinsuite_test_utils_blockchain::build_tx;
 use chronik_indexer::SlpIndexer;
-use chronik_rocksdb::{Db, IndexDb, IndexMemData, MempoolTxEntry, OutputsConf, PayloadPrefix};
+use chronik_rocksdb::{Db, IndexDb, IndexMemData, MempoolTxEntry, PayloadPrefix, ScriptTxsConf};
 use pretty_assertions::{assert_eq, assert_ne};
 use tempdir::TempDir;
 
@@ -46,7 +46,7 @@ fn test_mempool() -> Result<()> {
     instance.wait_for_ready()?;
     let pub_interface = PubInterface::open(&pub_url)?;
     let rpc_interface = RpcInterface::open(&rpc_url)?;
-    let outputs_conf = OutputsConf { page_size: 7 };
+    let outputs_conf = ScriptTxsConf { page_size: 7 };
     let db = Db::open(dir.path().join("index.rocksdb"))?;
     let db = IndexDb::new(db, outputs_conf);
     let bitcoind = instance.cli();
@@ -100,13 +100,16 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
     {
         use TxIdentifier::*;
         let addrs = slp_indexer.script_history();
-        let db_outputs = slp_indexer.db().outputs()?;
+        let db_script_txs = slp_indexer.db().script_txs()?;
         assert_eq!(addrs.num_mempool_txs(P2SH, anyone_slice), 0);
         assert_eq!(
-            db_outputs.page_txs(0, P2SH, anyone_slice)?,
+            db_script_txs.page_txs(0, P2SH, anyone_slice)?,
             vec![1, 2, 3, 4, 5, 6, 7]
         );
-        assert_eq!(db_outputs.page_txs(1, P2SH, anyone_slice)?, vec![8, 9, 10]);
+        assert_eq!(
+            db_script_txs.page_txs(1, P2SH, anyone_slice)?,
+            vec![8, 9, 10],
+        );
         check_rev_history_pages(
             slp_indexer,
             P2SH,

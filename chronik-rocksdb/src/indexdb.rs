@@ -10,26 +10,26 @@ use thiserror::Error;
 
 use crate::{
     input_tx_nums::fetch_input_tx_nums, Block, BlockHeight, BlockReader, BlockTxs, BlockWriter, Db,
-    MempoolData, MempoolDeleteMode, MempoolSlpData, MempoolTxEntry, MempoolWriter, OutputsConf,
-    OutputsReader, OutputsWriter, OutputsWriterCache, SlpReader, SlpWriter, SpendsReader,
+    MempoolData, MempoolDeleteMode, MempoolSlpData, MempoolTxEntry, MempoolWriter, ScriptTxsConf,
+    ScriptTxsReader, ScriptTxsWriter, ScriptTxsWriterCache, SlpReader, SlpWriter, SpendsReader,
     SpendsWriter, Timings, TxReader, TxWriter, UtxosReader, UtxosWriter,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct IndexTimings {
     pub timings: Timings,
-    pub outputs_timings: Timings,
+    pub script_txs_timings: Timings,
     pub utxos_timings: Timings,
 }
 
 pub struct IndexDb {
     db: Db,
     timings: RwLock<IndexTimings>,
-    outputs_conf: OutputsConf,
+    script_txs_conf: ScriptTxsConf,
 }
 
 pub struct IndexMemData {
-    outputs_cache: OutputsWriterCache,
+    script_txs_cache: ScriptTxsWriterCache,
     mempool: MempoolData,
     mempool_slp: MempoolSlpData,
 }
@@ -44,11 +44,11 @@ pub enum IndexDbError {
 use self::IndexDbError::*;
 
 impl IndexDb {
-    pub fn new(db: Db, outputs_conf: OutputsConf) -> Self {
+    pub fn new(db: Db, script_txs_conf: ScriptTxsConf) -> Self {
         IndexDb {
             db,
             timings: Default::default(),
-            outputs_conf,
+            script_txs_conf,
         }
     }
 
@@ -60,8 +60,8 @@ impl IndexDb {
         TxReader::new(&self.db)
     }
 
-    pub fn outputs(&self) -> Result<OutputsReader> {
-        OutputsReader::new(&self.db, self.outputs_conf.clone())
+    pub fn script_txs(&self) -> Result<ScriptTxsReader> {
+        ScriptTxsReader::new(&self.db, self.script_txs_conf.clone())
     }
 
     pub fn utxos(&self) -> Result<UtxosReader> {
@@ -99,7 +99,7 @@ impl IndexDb {
         let mut timings = self.timings.write().unwrap();
         let block_writer = BlockWriter::new(&self.db)?;
         let tx_writer = TxWriter::new(&self.db)?;
-        let output_writer = OutputsWriter::new(&self.db, self.outputs_conf.clone())?;
+        let script_txs_writer = ScriptTxsWriter::new(&self.db, self.script_txs_conf.clone())?;
         let utxo_writer = UtxosWriter::new(&self.db)?;
         let spends_writer = SpendsWriter::new(&self.db)?;
         let slp_writer = SlpWriter::new(&self.db)?;
@@ -120,15 +120,15 @@ impl IndexDb {
         timings.timings.stop_timer("fetch_input_tx_nums");
 
         timings.timings.start_timer();
-        let outputs_timings = output_writer.insert_block_txs(
+        let script_txs_timings = script_txs_writer.insert_block_txs(
             &mut batch,
             first_tx_num,
             txs,
             &block_spent_script_fn,
-            &mut data.outputs_cache,
+            &mut data.script_txs_cache,
         )?;
         timings.timings.stop_timer("outputs");
-        timings.outputs_timings.add(&outputs_timings);
+        timings.script_txs_timings.add(&script_txs_timings);
 
         timings.timings.start_timer();
         let utxos_timings = utxo_writer.insert_block_txs(
@@ -181,8 +181,8 @@ impl IndexDb {
     ) -> Result<()> {
         let block_writer = BlockWriter::new(&self.db)?;
         let tx_writer = TxWriter::new(&self.db)?;
-        let conf = OutputsConf { page_size: 1000 };
-        let output_writer = OutputsWriter::new(&self.db, conf)?;
+        let conf = ScriptTxsConf { page_size: 1000 };
+        let script_txs_writer = ScriptTxsWriter::new(&self.db, conf)?;
         let utxo_writer = UtxosWriter::new(&self.db)?;
         let spends_writer = SpendsWriter::new(&self.db)?;
         let slp_writer = SlpWriter::new(&self.db)?;
@@ -196,12 +196,12 @@ impl IndexDb {
             .by_hash(block_hash)?
             .ok_or_else(|| UnknownBlock(block_hash.clone()))?;
         tx_writer.delete_block_txs(&mut batch, block.height)?;
-        output_writer.delete_block_txs(
+        script_txs_writer.delete_block_txs(
             &mut batch,
             first_tx_num,
             txs,
             &block_spent_script_fn,
-            &mut data.outputs_cache,
+            &mut data.script_txs_cache,
         )?;
         utxo_writer.delete_block_txs(
             &mut batch,
@@ -253,7 +253,7 @@ impl IndexDb {
 impl IndexMemData {
     pub fn new(outputs_capacity: usize) -> Self {
         IndexMemData {
-            outputs_cache: OutputsWriterCache::with_capacity(outputs_capacity),
+            script_txs_cache: ScriptTxsWriterCache::with_capacity(outputs_capacity),
             mempool: MempoolData::default(),
             mempool_slp: MempoolSlpData::default(),
         }

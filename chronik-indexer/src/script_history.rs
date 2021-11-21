@@ -38,7 +38,7 @@ impl<'a> ScriptHistory<'a> {
     ) -> Result<Vec<RichTx>> {
         let mempool = self.indexer.db_mempool();
         let mut page_txs = Vec::new();
-        if let Some(address_mempool_by_time) = mempool.outputs(prefix, payload) {
+        if let Some(address_mempool_by_time) = mempool.script_txs(prefix, payload) {
             page_txs = address_mempool_by_time
                 .iter()
                 .rev()
@@ -67,13 +67,14 @@ impl<'a> ScriptHistory<'a> {
             Some(first_tx_idx_no_mempool) => first_tx_idx_no_mempool - num_page_mempool_txs,
             None => return Ok(page_txs),
         };
-        let db_outputs = self.indexer.db().outputs()?;
-        let db_page_num_start = first_tx_idx / db_outputs.page_size();
-        let mut first_inner_idx = first_tx_idx % db_outputs.page_size();
+        let db_script_txs = self.indexer.db().script_txs()?;
+        let db_page_num_start = first_tx_idx / db_script_txs.page_size();
+        let mut first_inner_idx = first_tx_idx % db_script_txs.page_size();
         let tx_reader = self.indexer.db().txs()?;
         // We start from the back and move to the front (rev history)
         'outer: for current_page_num in (0..=db_page_num_start).rev() {
-            let db_page_tx_nums = db_outputs.page_txs(current_page_num as u32, prefix, payload)?;
+            let db_page_tx_nums =
+                db_script_txs.page_txs(current_page_num as u32, prefix, payload)?;
             for inner_idx in (0..=first_inner_idx).rev() {
                 let tx_num = db_page_tx_nums[inner_idx];
                 let block_tx = tx_reader
@@ -85,7 +86,7 @@ impl<'a> ScriptHistory<'a> {
                     break 'outer;
                 }
             }
-            first_inner_idx = db_outputs.page_size() - 1;
+            first_inner_idx = db_script_txs.page_size() - 1;
         }
         // Stable sort, so the block order is retained when timestamps are identical
         page_txs.sort_by_key(|tx| (tx.block.is_some(), -tx.timestamp()));
@@ -105,20 +106,22 @@ impl<'a> ScriptHistory<'a> {
     }
 
     pub fn num_block_txs(&self, prefix: PayloadPrefix, payload: &[u8]) -> Result<usize> {
-        let db_outputs = self.indexer.db().outputs()?;
-        let num_pages = db_outputs.num_pages_by_payload(prefix, payload)?;
+        let db_script_txs = self.indexer.db().script_txs()?;
+        let num_pages = db_script_txs.num_pages_by_payload(prefix, payload)?;
         if num_pages == 0 {
             return Ok(0);
         }
         let last_page_num = num_pages as u32 - 1;
-        let last_page_size = db_outputs.page_txs(last_page_num, prefix, payload)?.len();
-        Ok(db_outputs.page_size() * (num_pages - 1) + last_page_size)
+        let last_page_size = db_script_txs
+            .page_txs(last_page_num, prefix, payload)?
+            .len();
+        Ok(db_script_txs.page_size() * (num_pages - 1) + last_page_size)
     }
 
     pub fn num_mempool_txs(&self, prefix: PayloadPrefix, payload: &[u8]) -> usize {
         self.indexer
             .db_mempool()
-            .outputs(prefix, payload)
+            .script_txs(prefix, payload)
             .map(|txs| txs.len())
             .unwrap_or_default()
     }

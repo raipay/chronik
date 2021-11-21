@@ -9,7 +9,7 @@ use crate::{script_payload::script_payloads, PayloadPrefix};
 #[derive(Debug, PartialEq, Eq, Default)]
 pub struct MempoolData {
     txs: HashMap<Sha256d, MempoolTxEntry>,
-    outputs: HashMap<Bytes, BTreeSet<(i64, Sha256d)>>,
+    script_txs: HashMap<Bytes, BTreeSet<(i64, Sha256d)>>,
     utxos: HashMap<Bytes, UtxoDelta>,
     spends: HashMap<Sha256d, BTreeSet<(u32, Sha256d, u32)>>,
 }
@@ -87,10 +87,14 @@ impl MempoolData {
                 script_payload.insert(0, prefix as u8);
                 let script_payload = Bytes::from_bytes(script_payload);
                 {
-                    if !self.outputs.contains_key(&script_payload) {
-                        self.outputs.insert(script_payload.clone(), BTreeSet::new());
+                    if !self.script_txs.contains_key(&script_payload) {
+                        self.script_txs
+                            .insert(script_payload.clone(), BTreeSet::new());
                     }
-                    let txs = self.outputs.get_mut(&script_payload).expect("Impossible");
+                    let txs = self
+                        .script_txs
+                        .get_mut(&script_payload)
+                        .expect("Impossible");
                     txs.insert((time_first_seen, txid.clone()));
                 }
                 {
@@ -110,10 +114,14 @@ impl MempoolData {
                 script_payload.insert(0, prefix as u8);
                 let script_payload = Bytes::from_bytes(script_payload);
                 {
-                    if !self.outputs.contains_key(&script_payload) {
-                        self.outputs.insert(script_payload.clone(), BTreeSet::new());
+                    if !self.script_txs.contains_key(&script_payload) {
+                        self.script_txs
+                            .insert(script_payload.clone(), BTreeSet::new());
                     }
-                    let txs = self.outputs.get_mut(&script_payload).expect("Impossible");
+                    let txs = self
+                        .script_txs
+                        .get_mut(&script_payload)
+                        .expect("Impossible");
                     txs.insert((time_first_seen, txid.clone()));
                 }
                 if !self.utxos.contains_key(&script_payload) {
@@ -164,10 +172,10 @@ impl MempoolData {
             for (prefix, mut script_payload) in script_payloads(&spent_output.script) {
                 script_payload.insert(0, prefix as u8);
                 let script_payload = Bytes::from_bytes(script_payload);
-                if let Some(txs) = self.outputs.get_mut(&script_payload) {
+                if let Some(txs) = self.script_txs.get_mut(&script_payload) {
                     txs.remove(&(time_first_seen, txid.clone()));
                     if txs.is_empty() {
-                        self.outputs.remove(&script_payload);
+                        self.script_txs.remove(&script_payload);
                     }
                 }
                 if !self.utxos.contains_key(&script_payload) {
@@ -208,10 +216,10 @@ impl MempoolData {
             for (prefix, mut script_payload) in script_payloads(&output.script) {
                 script_payload.insert(0, prefix as u8);
                 let script_payload = Bytes::from_bytes(script_payload);
-                if let Some(txs) = self.outputs.get_mut(&script_payload) {
+                if let Some(txs) = self.script_txs.get_mut(&script_payload) {
                     txs.remove(&(time_first_seen, txid.clone()));
                     if txs.is_empty() {
-                        self.outputs.remove(&script_payload);
+                        self.script_txs.remove(&script_payload);
                     }
                 }
                 let delta = match mode {
@@ -251,13 +259,13 @@ impl MempoolData {
         self.txs.get(txid)
     }
 
-    pub fn outputs(
+    pub fn script_txs(
         &self,
         prefix: PayloadPrefix,
         payload: &[u8],
     ) -> Option<&BTreeSet<(i64, Sha256d)>> {
         let script_payload = [[prefix as u8].as_ref(), payload].concat();
-        self.outputs.get(script_payload.as_slice())
+        self.script_txs.get(script_payload.as_slice())
     }
 
     pub fn utxos(&self, prefix: PayloadPrefix, payload: &[u8]) -> Option<&UtxoDelta> {
@@ -505,14 +513,14 @@ mod tests {
             .collect::<BTreeSet<_>>();
         let script_payload = [[prefix as u8].as_ref(), payload].concat();
         assert_eq!(
-            mempool.outputs.get(script_payload.as_slice()),
+            mempool.script_txs.get(script_payload.as_slice()),
             Some(&expected_outpoints),
         );
     }
 
     fn check_outputs_absent(mempool: &MempoolData, prefix: PayloadPrefix, payload: &[u8]) {
         let script_payload = [[prefix as u8].as_ref(), payload].concat();
-        assert_eq!(mempool.outputs.get(script_payload.as_slice()), None);
+        assert_eq!(mempool.script_txs.get(script_payload.as_slice()), None);
     }
 
     fn check_utxos<const N: usize, const M: usize>(

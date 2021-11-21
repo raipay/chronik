@@ -15,8 +15,8 @@ use bitcoinsuite_slp::{RichTxBlock, RichUtxo};
 use bitcoinsuite_test_utils::bin_folder;
 use chronik_indexer::SlpIndexer;
 use chronik_rocksdb::{
-    BlockTx, Db, IndexDb, IndexMemData, OutpointEntry, OutputsConf, OutputsReader, PayloadPrefix,
-    TxEntry, UtxosReader,
+    BlockTx, Db, IndexDb, IndexMemData, OutpointEntry, PayloadPrefix, ScriptTxsConf,
+    ScriptTxsReader, TxEntry, UtxosReader,
 };
 use pretty_assertions::assert_eq;
 use tempdir::TempDir;
@@ -43,9 +43,9 @@ fn test_non_slp() -> Result<()> {
     instance.wait_for_ready()?;
     let pub_interface = PubInterface::open(&pub_url)?;
     let rpc_interface = RpcInterface::open(&rpc_url)?;
-    let outputs_conf = OutputsConf { page_size: 1000 };
+    let script_txs_conf = ScriptTxsConf { page_size: 1000 };
     let db = Db::open(dir.path().join("index.rocksdb"))?;
-    let db = IndexDb::new(db, outputs_conf);
+    let db = IndexDb::new(db, script_txs_conf);
     let bitcoin_cli = instance.cli();
     let cache = IndexMemData::new(10);
     let mut slp_indexer = SlpIndexer::new(
@@ -125,7 +125,7 @@ fn test_index_genesis(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
         "04678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e5\
          1ec112de5c384df7ba0b8d578a4c702b6bf11d5f"
     )?;
-    let r = &slp_indexer.db().outputs()?;
+    let r = &slp_indexer.db().script_txs()?;
     let db_utxos = &slp_indexer.db().utxos()?;
     check_pages(r, PayloadPrefix::P2PKLegacy, &genesis_payload, [&[0]])?;
     check_utxos(
@@ -199,7 +199,7 @@ fn test_get_out_of_ibd(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> R
     assert_eq!(cur_info["initialblockdownload"], false);
     let coinbase_txid = get_coinbase_txid(bitcoind, &tip.hash)?;
     check_tx_indexed(slp_indexer, &coinbase_txid, 1, 557, 111, 0, 0, 0)?;
-    let r = &slp_indexer.db().outputs()?;
+    let r = &slp_indexer.db().script_txs()?;
     let db_utxos = &slp_indexer.db().utxos()?;
     check_pages(r, PayloadPrefix::P2SH, &[0; 20], [&[1]])?;
     check_utxos(db_utxos, PayloadPrefix::P2SH, &[0; 20], [(1, 1)])?;
@@ -248,7 +248,7 @@ fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Resu
     let old_txid = get_coinbase_txid(bitcoind, &tip.hash)?;
     check_tx_indexed(slp_indexer, &old_txid, 1, 557, 111, 0, 0, 0)?;
     check_pages(
-        &slp_indexer.db().outputs()?,
+        &slp_indexer.db().script_txs()?,
         PayloadPrefix::P2SH,
         &[0; 20],
         [&[1]],
@@ -299,7 +299,7 @@ fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Resu
         0,
     )?;
     check_pages(
-        &slp_indexer.db().outputs()?,
+        &slp_indexer.db().script_txs()?,
         PayloadPrefix::P2SH,
         &[0; 20],
         [],
@@ -311,7 +311,7 @@ fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Resu
         [],
     )?;
     check_pages(
-        &slp_indexer.db().outputs()?,
+        &slp_indexer.db().script_txs()?,
         PayloadPrefix::P2SH,
         anyone_payload,
         [],
@@ -333,7 +333,7 @@ fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Resu
     let coinbase_txid1 = get_coinbase_txid(bitcoind, &block1_tip.hash)?;
     check_tx_indexed(slp_indexer, &coinbase_txid1, 1, 838, 180, 0, 0, 0)?;
     check_pages(
-        &slp_indexer.db().outputs()?,
+        &slp_indexer.db().script_txs()?,
         PayloadPrefix::P2SH,
         anyone_payload,
         [&[1]],
@@ -357,7 +357,7 @@ fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Resu
     let coinbase_txid2 = get_coinbase_txid(bitcoind, &block2_tip.hash)?;
     check_tx_indexed(slp_indexer, &coinbase_txid2, 2, 1188, 180, 0, 0, 0)?;
     check_pages(
-        &slp_indexer.db().outputs()?,
+        &slp_indexer.db().script_txs()?,
         PayloadPrefix::P2SH,
         anyone_payload,
         [&[1, 2]],
@@ -377,18 +377,18 @@ fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Resu
 }
 
 fn check_pages<const N: usize>(
-    outputs_reader: &OutputsReader,
+    script_txs_reader: &ScriptTxsReader,
     prefix: PayloadPrefix,
     payload_body: &[u8],
     expected_txs: [&[u64]; N],
 ) -> Result<()> {
     assert_eq!(
-        outputs_reader.num_pages_by_payload(prefix, payload_body)?,
+        script_txs_reader.num_pages_by_payload(prefix, payload_body)?,
         N,
     );
     for (page_num, txs) in expected_txs.into_iter().enumerate() {
         assert_eq!(
-            outputs_reader.page_txs(page_num as u32, prefix, payload_body)?,
+            script_txs_reader.page_txs(page_num as u32, prefix, payload_body)?,
             txs.to_vec(),
         );
     }
