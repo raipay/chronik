@@ -13,8 +13,9 @@ use bitcoinsuite_core::{
 use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
 use bitcoinsuite_error::Result;
 use bitcoinsuite_slp::{
-    genesis_opreturn, send_opreturn, RichTx, RichTxBlock, SlpAmount, SlpGenesisInfo, SlpToken,
-    SlpTokenType, SlpTxData, SlpTxType, SlpValidTxData, TokenId,
+    genesis_opreturn, send_opreturn, RichTx, RichTxBlock, RichUtxo, SlpAmount, SlpGenesisInfo,
+    SlpOutput, SlpToken, SlpTokenType, SlpTxData, SlpTxType, SlpTxTypeVariant, SlpValidTxData,
+    TokenId,
 };
 use bitcoinsuite_test_utils::bin_folder;
 use bitcoinsuite_test_utils_blockchain::build_tx;
@@ -117,6 +118,23 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
                 &[N(2), N(1)],
             ],
         )?;
+        check_rich_utxos(
+            slp_indexer,
+            P2SH,
+            anyone_slice,
+            [
+                (N(1), 1, true),
+                (N(2), 1, true),
+                (N(3), 1, true),
+                (N(4), 1, true),
+                (N(5), 1, true),
+                (N(6), 1, true),
+                (N(7), 1, true),
+                (N(8), 1, true),
+                (N(9), 1, true),
+                (N(10), 1, true),
+            ],
+        )?;
     }
 
     let mut utxos = Vec::new();
@@ -203,6 +221,23 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
                 &[H(&txid1), N(10), N(9), N(8)],
                 &[N(7), N(6), N(5), N(4)],
                 &[N(3), N(2), N(1)],
+            ],
+        )?;
+        check_rich_utxos(
+            slp_indexer,
+            P2SH,
+            anyone_slice,
+            [
+                (N(1), 1, true),
+                (N(2), 1, true),
+                (N(3), 1, true),
+                (N(4), 1, true),
+                (N(5), 1, true),
+                (N(6), 1, true),
+                (N(7), 1, true),
+                (N(8), 1, true),
+                (N(9), 1, true),
+                (H(&txid1), 1, false),
             ],
         )?;
     }
@@ -327,6 +362,23 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
                 &[N(4), N(3), N(2), N(1)],
             ],
         )?;
+        check_rich_utxos(
+            slp_indexer,
+            P2SH,
+            anyone_slice,
+            [
+                (N(1), 1, true),
+                (N(2), 1, true),
+                (N(3), 1, true),
+                (N(4), 1, true),
+                (N(5), 1, true),
+                (N(6), 1, true),
+                (N(7), 1, true),
+                (N(8), 1, true),
+                (H(&txid1), 1, false),
+                (H(&txid2), 1, false),
+            ],
+        )?;
     }
 
     bitcoind.cmd_string("setmocktime", &["2100000002"])?;
@@ -364,7 +416,7 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
             },
             TxOutput {
                 value: send_value,
-                script: burn_address.to_script(),
+                script: anyone_address.to_script(),
             },
         ],
         lock_time: 0,
@@ -511,6 +563,21 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
                 &[N(1)],
             ],
         )?;
+        check_rich_utxos(
+            slp_indexer,
+            P2SH,
+            anyone_slice,
+            [
+                (N(1), 1, true),
+                (N(2), 1, true),
+                (N(3), 1, true),
+                (N(4), 1, true),
+                (N(5), 1, true),
+                (N(6), 1, true),
+                (N(7), 1, true),
+                (H(&txid3), 1, false),
+            ],
+        )?;
     }
 
     let tip = slp_indexer.db().blocks()?.tip()?.unwrap();
@@ -571,6 +638,25 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
             .block_txs_by_hash(&block1.header.calc_hash())?,
         slp_indexer.blocks().block_txs_by_height(111)?,
     );
+    {
+        use TxIdentifier::*;
+        check_rich_utxos(
+            slp_indexer,
+            P2SH,
+            anyone_slice,
+            [
+                (N(1), 1, true),
+                (N(2), 1, true),
+                (N(3), 1, true),
+                (N(4), 1, true),
+                (N(5), 1, true),
+                (N(6), 1, true),
+                (N(7), 1, true),
+                (N(111), 1, true),
+                (H(&txid3), 1, false),
+            ],
+        )?;
+    }
 
     // modify tx3
     tx3.outputs[1].value -= 1;
@@ -683,6 +769,43 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
             .block_txs_by_hash(&block2.header.calc_hash())?,
         slp_indexer.blocks().block_txs_by_height(112)?,
     );
+    {
+        use TxIdentifier::*;
+        check_rich_utxos(
+            slp_indexer,
+            P2SH,
+            anyone_slice,
+            [
+                (N(1), 1, true),
+                (N(2), 1, true),
+                (N(3), 1, true),
+                (N(4), 1, true),
+                (N(5), 1, true),
+                (N(6), 1, true),
+                (N(7), 1, true),
+                (N(111), 1, true),
+                (N(113), 1, true),
+                (H(&txid3_modified), 1, false),
+            ],
+        )?;
+        check_rich_utxos(
+            slp_indexer,
+            P2SH,
+            anyone_slice,
+            [
+                (N(1), 1, true),
+                (N(2), 1, true),
+                (N(3), 1, true),
+                (N(4), 1, true),
+                (N(5), 1, true),
+                (N(6), 1, true),
+                (N(7), 1, true),
+                (N(111), 1, true),
+                (N(113), 1, true),
+                (N(114), 1, false),
+            ],
+        )?;
+    }
 
     Ok(())
 }
@@ -739,5 +862,46 @@ fn check_rev_history_pages<const M: usize>(
             .collect::<Result<Vec<_>>>()?;
         assert_eq!(actual_rich_txs, expected_rich_txs);
     }
+    Ok(())
+}
+
+fn check_rich_utxos<const M: usize>(
+    slp_indexer: &SlpIndexer,
+    prefix: PayloadPrefix,
+    payload: &[u8],
+    outpoints: [(TxIdentifier, u32, bool); M],
+) -> Result<()> {
+    let tx_reader = slp_indexer.db().txs()?;
+    let actual_outpoints = outpoints
+        .into_iter()
+        .map(|(tx_id, out_idx, is_coinbase)| {
+            let txid = match tx_id {
+                TxIdentifier::N(tx_num) => tx_reader.txid_by_tx_num(tx_num)?.unwrap(),
+                TxIdentifier::H(txid) => txid.clone(),
+            };
+            let rich_tx = slp_indexer.txs().rich_tx_by_txid(&txid)?.unwrap();
+            Ok(RichUtxo {
+                outpoint: OutPoint { txid, out_idx },
+                block: rich_tx.block,
+                is_coinbase,
+                output: rich_tx.tx.outputs()[out_idx as usize].clone(),
+                slp_output: rich_tx.slp_tx_data.map(|slp_data| {
+                    Box::new(SlpOutput {
+                        token_id: slp_data.token_id,
+                        token_type: slp_data.slp_token_type,
+                        tx_type: SlpTxTypeVariant::Unknown,
+                        token: slp_data.output_tokens[out_idx as usize],
+                        group_token_id: slp_data.group_token_id,
+                    })
+                }),
+                time_first_seen: rich_tx.time_first_seen,
+                network: rich_tx.network,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    assert_eq!(
+        slp_indexer.utxos().utxos(prefix, payload)?,
+        actual_outpoints,
+    );
     Ok(())
 }

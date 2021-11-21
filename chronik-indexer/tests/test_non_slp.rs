@@ -7,10 +7,11 @@ use bitcoinsuite_bitcoind::{
 use bitcoinsuite_bitcoind_nng::{PubInterface, RpcInterface};
 use bitcoinsuite_core::{
     build_lotus_block, build_lotus_coinbase, AddressType, BitcoinCode, Bytes, CashAddress, Hashed,
-    Network, Script, Sha256d, ShaRmd160, BCHREG,
+    Network, Op, OutPoint, Script, Sha256d, ShaRmd160, TxOutput, BCHREG,
 };
 use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
 use bitcoinsuite_error::Result;
+use bitcoinsuite_slp::{RichTxBlock, RichUtxo};
 use bitcoinsuite_test_utils::bin_folder;
 use chronik_indexer::SlpIndexer;
 use chronik_rocksdb::{
@@ -141,6 +142,36 @@ fn test_index_genesis(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
         slp_indexer.blocks().block_txs_by_hash(&block.hash)?,
         slp_indexer.blocks().block_txs_by_height(0)?,
     );
+    assert_eq!(
+        slp_indexer
+            .utxos()
+            .utxos(PayloadPrefix::P2PKLegacy, &genesis_payload)?,
+        vec![RichUtxo {
+            outpoint: OutPoint {
+                txid: coinbase_txid,
+                out_idx: 1,
+            },
+            block: Some(RichTxBlock {
+                height: 0,
+                hash: tip.hash.clone(),
+                timestamp: tip.timestamp,
+            }),
+            is_coinbase: true,
+            output: TxOutput {
+                value: 130_000_000,
+                script: Script::from_ops(
+                    [
+                        Op::Push(genesis_payload.len() as u8, genesis_payload.into()),
+                        Op::Code(0xac),
+                    ]
+                    .into_iter()
+                )?,
+            },
+            slp_output: None,
+            time_first_seen: 0,
+            network: Network::XPI,
+        }],
+    );
     Ok(())
 }
 
@@ -172,13 +203,33 @@ fn test_get_out_of_ibd(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> R
     let db_utxos = &slp_indexer.db().utxos()?;
     check_pages(r, PayloadPrefix::P2SH, &[0; 20], [&[1]])?;
     check_utxos(db_utxos, PayloadPrefix::P2SH, &[0; 20], [(1, 1)])?;
+    let rich_coinbase_tx = slp_indexer.txs().rich_tx_by_txid(&coinbase_txid)?.unwrap();
     assert_eq!(
         slp_indexer.blocks().block_txs_by_hash(&tip.hash)?,
-        vec![slp_indexer.txs().rich_tx_by_txid(&coinbase_txid)?.unwrap()],
+        vec![rich_coinbase_tx.clone()],
     );
     assert_eq!(
         slp_indexer.blocks().block_txs_by_hash(&tip.hash)?,
         slp_indexer.blocks().block_txs_by_height(1)?,
+    );
+    assert_eq!(
+        slp_indexer.utxos().utxos(PayloadPrefix::P2SH, &[0; 20])?,
+        vec![RichUtxo {
+            outpoint: OutPoint {
+                txid: coinbase_txid,
+                out_idx: 1,
+            },
+            block: Some(RichTxBlock {
+                height: 1,
+                hash: tip.hash.clone(),
+                timestamp: tip.timestamp,
+            }),
+            is_coinbase: true,
+            output: rich_coinbase_tx.tx.outputs()[1].clone(),
+            slp_output: None,
+            time_first_seen: 0,
+            network: Network::XPI,
+        }],
     );
 
     // catchup finished

@@ -23,8 +23,8 @@ pub struct MempoolTxEntry {
 
 #[derive(Debug, PartialEq, Eq, Default)]
 pub struct UtxoDelta {
-    inserts: BTreeSet<OutPoint>,
-    deletes: BTreeSet<OutPoint>,
+    pub inserts: BTreeSet<OutPoint>,
+    pub deletes: BTreeSet<OutPoint>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
