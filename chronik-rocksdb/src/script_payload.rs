@@ -29,8 +29,9 @@ pub fn script_payloads(script: &Script) -> Vec<(PayloadPrefix, Vec<u8>)> {
             (P2TRCommitment, commitment.as_slice().to_vec()),
             (P2TRState, state.to_vec()),
         ],
-        ScriptVariant::Other(script) => {
-            vec![(Other, script.bytecode().to_vec())]
-        }
+        ScriptVariant::Other(script) => match script.is_opreturn() {
+            true => vec![],
+            false => vec![(Other, script.bytecode().to_vec())],
+        },
     }
 }
