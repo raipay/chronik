@@ -14,7 +14,7 @@ use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
 use bitcoinsuite_error::Result;
 use bitcoinsuite_slp::{
     genesis_opreturn, send_opreturn, RichTx, RichTxBlock, RichUtxo, SlpAmount, SlpGenesisInfo,
-    SlpOutput, SlpToken, SlpTokenType, SlpTxData, SlpTxType, SlpTxTypeVariant, SlpValidTxData,
+    SlpOutput, SlpToken, SlpTokenType, SlpTxData, SlpTxType, SlpValidTxData,
     TokenId,
 };
 use bitcoinsuite_test_utils::bin_folder;
@@ -891,8 +891,8 @@ fn check_rich_utxos<const M: usize>(
                 slp_output: rich_tx.slp_tx_data.map(|slp_data| {
                     Box::new(SlpOutput {
                         token_id: slp_data.token_id,
+                        tx_type: slp_data.slp_tx_type.tx_type_variant(),
                         token_type: slp_data.slp_token_type,
-                        tx_type: SlpTxTypeVariant::Unknown,
                         token: slp_data.output_tokens[out_idx as usize],
                         group_token_id: slp_data.group_token_id,
                     })

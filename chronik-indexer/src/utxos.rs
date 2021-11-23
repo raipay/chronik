@@ -1,6 +1,6 @@
 use bitcoinsuite_core::{BitcoinCode, Bytes, OutPoint, Sha256d, UnhashedTx};
 use bitcoinsuite_error::{ErrorMeta, Result};
-use bitcoinsuite_slp::{RichTxBlock, RichUtxo, SlpOutput, SlpSpentOutput, SlpTxTypeVariant};
+use bitcoinsuite_slp::{RichTxBlock, RichUtxo, SlpOutput};
 use chronik_rocksdb::{PayloadPrefix, TxNum, UtxoDelta};
 use thiserror::Error;
 
@@ -63,11 +63,12 @@ impl<'a> Utxos<'a> {
             let mut raw_tx = Bytes::from_bytes(raw_tx);
             let tx = UnhashedTx::deser(&mut raw_tx)?;
             let output = tx.outputs[out_idx].clone();
-            let slp_data = slp_reader
+            let slp_output = slp_reader
                 .slp_data_by_tx_num(db_utxo.tx_num)?
                 .map(|(slp_data, _)| {
-                    Box::new(SlpSpentOutput {
+                    Box::new(SlpOutput {
                         token_id: slp_data.token_id,
+                        tx_type: slp_data.slp_tx_type.tx_type_variant(),
                         token_type: slp_data.slp_token_type,
                         token: slp_data.output_tokens[out_idx],
                         group_token_id: slp_data.group_token_id,
@@ -82,15 +83,7 @@ impl<'a> Utxos<'a> {
                 }),
                 is_coinbase: tx.inputs[0].prev_out.is_coinbase(),
                 output,
-                slp_output: slp_data.map(|slp_data| {
-                    Box::new(SlpOutput {
-                        token_id: slp_data.token_id,
-                        tx_type: SlpTxTypeVariant::Unknown,
-                        token_type: slp_data.token_type,
-                        token: slp_data.token,
-                        group_token_id: slp_data.group_token_id,
-                    })
-                }),
+                slp_output,
                 time_first_seen: block_tx.entry.time_first_seen,
                 network: self.indexer.network,
             };
@@ -104,13 +97,14 @@ impl<'a> Utxos<'a> {
                 .tx(&outpoint.txid)
                 .ok_or_else(|| InconsistentNoSuchMempoolTx(outpoint.txid.clone()))?;
             let output = entry.tx.outputs[out_idx].clone();
-            let slp_data = self
+            let slp_output = self
                 .indexer
                 .db_mempool_slp()
                 .slp_tx_data(&outpoint.txid)
                 .map(|slp_data| {
-                    Box::new(SlpSpentOutput {
+                    Box::new(SlpOutput {
                         token_id: slp_data.slp_tx_data.token_id.clone(),
+                        tx_type: slp_data.slp_tx_data.slp_tx_type.tx_type_variant(),
                         token_type: slp_data.slp_tx_data.slp_token_type,
                         token: slp_data.slp_tx_data.output_tokens[out_idx],
                         group_token_id: slp_data.slp_tx_data.group_token_id.clone(),
@@ -121,15 +115,7 @@ impl<'a> Utxos<'a> {
                 block: None,
                 is_coinbase: false,
                 output,
-                slp_output: slp_data.map(|slp_data| {
-                    Box::new(SlpOutput {
-                        token_id: slp_data.token_id,
-                        tx_type: SlpTxTypeVariant::Unknown,
-                        token_type: slp_data.token_type,
-                        token: slp_data.token,
-                        group_token_id: slp_data.group_token_id,
-                    })
-                }),
+                slp_output,
                 time_first_seen: entry.time_first_seen,
                 network: self.indexer.network,
             };
