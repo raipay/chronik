@@ -90,6 +90,9 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
     );
 
     let burn_address = CashAddress::from_hash(BCHREG, AddressType::P2SH, ShaRmd160::new([0; 20]));
+    let burn_hash = [1; 20];
+    let burn_address2 =
+        CashAddress::from_hash(BCHREG, AddressType::P2SH, ShaRmd160::new(burn_hash));
     bitcoind.cmd_json("generatetoaddress", &["100", burn_address.as_str()])?;
     while !slp_indexer.catchup_step()? {}
     slp_indexer.leave_catchup()?;
@@ -164,7 +167,7 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
         vec![
             TxOutput {
                 value: 10_000,
-                script: burn_address.to_script(),
+                script: burn_address2.to_script(),
             },
             TxOutput {
                 value: leftover_value,
@@ -226,6 +229,7 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
                 &[N(3), N(2), N(1)],
             ],
         )?;
+        check_rev_history_pages(slp_indexer, P2SH, &burn_hash, 4, [&[H(&txid1)]])?;
         check_rich_utxos(
             slp_indexer,
             P2SH,
@@ -805,7 +809,7 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
                 (N(7), 1, true),
                 (N(111), 1, true),
                 (N(113), 1, true),
-                (N(114), 1, false),
+                (N(115), 1, false),
             ],
         )?;
     }

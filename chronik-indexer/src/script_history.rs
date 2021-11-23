@@ -55,10 +55,10 @@ impl<'a> ScriptHistory<'a> {
                 .collect::<Result<Vec<_>>>()?;
         }
         let num_page_mempool_txs = page_txs.len();
-        if num_page_mempool_txs == history_page_size {
+        let num_block_txs = self.num_block_txs(prefix, payload)?;
+        if num_page_mempool_txs == history_page_size || num_block_txs == 0 {
             return Ok(page_txs);
         }
-        let num_block_txs = self.num_block_txs(prefix, payload)?;
         let num_mempool_txs = self.num_mempool_txs(prefix, payload);
         let total_num_txs = num_mempool_txs + num_block_txs;
         // Index of first tx to query (chonological order)
