@@ -19,7 +19,7 @@ pub struct SlpIndexer {
     pub(crate) pub_interface: PubInterface,
     pub(crate) data: IndexMemData,
     pub(crate) network: Network,
-    pub(crate) ecc: Arc<dyn Ecc>,
+    pub(crate) ecc: Arc<dyn Ecc + Sync + Send>,
 }
 
 #[derive(Debug, Error, ErrorMeta)]
@@ -48,7 +48,7 @@ impl SlpIndexer {
         pub_interface: PubInterface,
         data: IndexMemData,
         network: Network,
-        ecc: Arc<dyn Ecc>,
+        ecc: Arc<dyn Ecc + Sync + Send>,
     ) -> Result<Self> {
         pub_interface.subscribe("------------")?;
         Ok(SlpIndexer {

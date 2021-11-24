@@ -1,0 +1,50 @@
+[package]
+name = "chronik-http"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.3"
+
+# Async
+tokio = { version = "1.14", features = ["full"] }
+
+# Error handling
+thiserror = "1.0"
+bitcoinsuite-error = { path = "../../bitcoinsuite/bitcoinsuite-error" }
+
+tonic = { version = "0.6", features = ["transport", "tls"] }
+prost = "0.9"
+async-trait = "0.1.50"
+hyper = "0.14"
+
+bitcoinsuite-core = { path = "../../bitcoinsuite/bitcoinsuite-core" }
+bitcoinsuite-slp = { path = "../../bitcoinsuite/bitcoinsuite-slp" }
+
+chronik-indexer = { path = "../chronik-indexer" }
+chronik-rocksdb = { path = "../chronik-rocksdb" }
+
+bytes = "1.1"
+
+hex = "0.4"
+
+serde = { version="1.0", features = ["derive"] }
+
+[dev-dependencies]
+reqwest = "0.11"
+
+pretty_assertions = "1.0"
+
+bitcoinsuite-test-utils = { path = "../../bitcoinsuite/bitcoinsuite-test-utils" }
+bitcoinsuite-test-utils-blockchain = { path = "../../bitcoinsuite/bitcoinsuite-test-utils-blockchain" }
+
+bitcoinsuite-ecc-secp256k1 = { path = "../../bitcoinsuite/bitcoinsuite-ecc-secp256k1" }
+
+# For ipc named pipes
+tempdir = "0.3"
+
+bitcoinsuite-bitcoind = { path = "../../bitcoinsuite/bitcoinsuite-bitcoind" }
+bitcoinsuite-bitcoind-nng = { path = "../../bitcoinsuite/bitcoinsuite-bitcoind-nng" }
+
+[build-dependencies]
+tonic-build = "0.6"

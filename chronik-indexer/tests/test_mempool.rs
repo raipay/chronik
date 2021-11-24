@@ -14,8 +14,7 @@ use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
 use bitcoinsuite_error::Result;
 use bitcoinsuite_slp::{
     genesis_opreturn, send_opreturn, RichTx, RichTxBlock, RichUtxo, SlpAmount, SlpGenesisInfo,
-    SlpOutput, SlpToken, SlpTokenType, SlpTxData, SlpTxType, SlpValidTxData,
-    TokenId,
+    SlpOutput, SlpToken, SlpTokenType, SlpTxData, SlpTxType, SlpValidTxData, TokenId,
 };
 use bitcoinsuite_test_utils::bin_folder;
 use bitcoinsuite_test_utils_blockchain::build_tx;

@@ -1,0 +1,122 @@
+syntax = "proto3";
+
+package chronik;
+
+message Tx {
+    bytes txid = 1;
+    int32 version = 2;
+    repeated TxInput inputs = 3;
+    repeated TxOutput outputs = 4;
+    uint32 lock_time = 5;
+    SlpTxData slp_tx_data = 6;
+    string slp_error_msg = 7;
+    BlockMetadata block = 8;
+    int64 time_first_seen = 9;
+    Network network = 10;
+}
+
+message Utxo {
+    OutPoint outpoint = 1;
+    BlockMetadata block = 2;
+    bool is_coinbase = 3;
+    bytes output_script = 4;
+    int64 value = 5;
+    SlpMeta slp_meta = 6;
+    SlpToken slp_token = 7;
+    int64 time_first_seen = 8;
+    Network network = 9;
+}
+
+message TxHistoryPage {
+    repeated Tx txs = 1;
+    uint32 num_pages = 2;
+}
+
+message Utxos {
+    repeated Utxo utxos = 1;
+}
+
+message SlpTxData {
+    SlpMeta slp_meta = 1;
+    SlpGenesisInfo genesis_info = 2;
+}
+
+message SlpMeta {
+    SlpTokenType token_type = 1;
+    SlpTxType tx_type = 2;
+    bytes token_id = 3;
+    bytes group_token_id = 4;
+}
+
+message TxInput {
+    OutPoint prev_out = 1;
+    bytes input_script = 2;
+    bytes output_script = 3;
+    int64 value = 4;
+    uint32 sequence_no = 5;
+    SlpBurn slp_burn = 6;
+    SlpToken slp_token = 7;
+}
+
+message TxOutput {
+    int64 value = 1;
+    bytes output_script = 2;
+    SlpToken slp_token = 3;
+    OutPoint spent_by = 4;
+}
+
+message BlockMetadata {
+    int32 height = 1;
+    bytes hash = 2;
+    int64 timestamp = 3;
+}
+
+message OutPoint {
+    bytes txid = 1;
+    uint32 out_idx = 2;
+}
+
+message SlpToken {
+    uint64 amount = 1;
+    bool is_mint_baton = 2;
+}
+
+message SlpBurn {
+    SlpToken token = 1;
+    bytes token_id = 2;
+}
+
+message SlpGenesisInfo {
+    bytes token_ticker = 1;
+    bytes token_name = 2;
+    bytes token_document_url = 3;
+    bytes token_document_hash = 4;
+    uint32 decimals = 5;
+}
+
+enum SlpTokenType {
+    FUNGIBLE = 0;
+    NFT1_GROUP = 1;
+    NFT1_CHILD = 2;
+    UNKNOWN_TOKEN_TYPE = 3;
+}
+
+enum SlpTxType {
+    GENESIS = 0;
+    SEND = 1;
+    MINT = 2;
+    UNKNOWN_TX_TYPE = 3;
+}
+
+enum Network {
+    BCH = 0;
+    XEC = 1;
+    XPI = 2;
+    XRG = 3;
+}
+
+message Error {
+    string error_code = 1;
+    string msg = 2;
+    bool is_user_error = 3;
+}
