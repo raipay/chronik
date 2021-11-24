@@ -1,13 +1,27 @@
 use bitcoinsuite_core::{BitcoinCode, Bytes, OutPoint, Sha256d, UnhashedTx};
 use bitcoinsuite_error::{ErrorMeta, Result};
 use bitcoinsuite_slp::{RichTxBlock, RichUtxo, SlpOutput};
-use chronik_rocksdb::{PayloadPrefix, TxNum, UtxoDelta};
+use chronik_rocksdb::{BlockHeight, PayloadPrefix, TxNum, UtxoDelta};
 use thiserror::Error;
 
 use crate::SlpIndexer;
 
 pub struct Utxos<'a> {
     indexer: &'a SlpIndexer,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct UtxoState {
+    pub height: Option<BlockHeight>,
+    pub state: UtxoStateVariant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum UtxoStateVariant {
+    Unspent,
+    Spent,
+    NoSuchTx,
+    NoSuchOutput,
 }
 
 #[derive(Debug, Error, ErrorMeta)]
@@ -122,5 +136,82 @@ impl<'a> Utxos<'a> {
             utxos.push(rich_utxo);
         }
         Ok(utxos)
+    }
+
+    pub fn utxo_state(&self, outpoint: &OutPoint) -> Result<UtxoState> {
+        let mempool = self.indexer.db_mempool();
+        let mut is_spent_in_mempool = false;
+        if let Some(spends) = mempool.spends(&outpoint.txid) {
+            if spends
+                .iter()
+                .any(|&(out_idx, _, _)| out_idx == outpoint.out_idx)
+            {
+                if mempool.tx(&outpoint.txid).is_some() {
+                    return Ok(UtxoState {
+                        height: None,
+                        state: UtxoStateVariant::Spent,
+                    });
+                }
+                is_spent_in_mempool = true;
+            }
+        }
+        if !is_spent_in_mempool {
+            if let Some(tx) = mempool.tx(&outpoint.txid) {
+                if outpoint.out_idx as usize >= tx.tx.outputs.len() {
+                    return Ok(UtxoState {
+                        height: None,
+                        state: UtxoStateVariant::NoSuchOutput,
+                    });
+                }
+                return Ok(UtxoState {
+                    height: None,
+                    state: UtxoStateVariant::Unspent,
+                });
+            }
+        }
+        let tx_reader = self.indexer.db().txs()?;
+        let spends_reader = self.indexer.db().spends()?;
+        let (tx_num, block_tx) = match tx_reader.tx_and_num_by_txid(&outpoint.txid)? {
+            Some(tx) => tx,
+            None => {
+                return Ok(UtxoState {
+                    height: None,
+                    state: UtxoStateVariant::NoSuchTx,
+                })
+            }
+        };
+        if is_spent_in_mempool {
+            return Ok(UtxoState {
+                height: Some(block_tx.block_height),
+                state: UtxoStateVariant::Spent,
+            });
+        }
+        let spends = spends_reader.spends_by_tx_num(tx_num)?;
+        if spends.iter().any(|spend| spend.out_idx == outpoint.out_idx) {
+            return Ok(UtxoState {
+                height: Some(block_tx.block_height),
+                state: UtxoStateVariant::Spent,
+            });
+        }
+        let block_reader = self.indexer.db().blocks()?;
+        let block = block_reader
+            .by_height(block_tx.block_height)?
+            .expect("Inconsistent db");
+        let raw_tx = self.indexer.rpc_interface.get_block_slice(
+            block.file_num,
+            block_tx.entry.data_pos,
+            block_tx.entry.tx_size,
+        )?;
+        let tx = UnhashedTx::deser(&mut Bytes::from_bytes(raw_tx))?;
+        if outpoint.out_idx as usize >= tx.outputs.len() {
+            return Ok(UtxoState {
+                height: Some(block_tx.block_height),
+                state: UtxoStateVariant::NoSuchOutput,
+            });
+        }
+        Ok(UtxoState {
+            height: Some(block_tx.block_height),
+            state: UtxoStateVariant::Unspent,
+        })
     }
 }

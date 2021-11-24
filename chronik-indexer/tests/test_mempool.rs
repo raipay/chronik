@@ -18,7 +18,7 @@ use bitcoinsuite_slp::{
 };
 use bitcoinsuite_test_utils::bin_folder;
 use bitcoinsuite_test_utils_blockchain::build_tx;
-use chronik_indexer::SlpIndexer;
+use chronik_indexer::{SlpIndexer, UtxoState, UtxoStateVariant};
 use chronik_rocksdb::{Db, IndexDb, IndexMemData, MempoolTxEntry, PayloadPrefix, ScriptTxsConf};
 use pretty_assertions::{assert_eq, assert_ne};
 use tempdir::TempDir;
@@ -106,7 +106,7 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
         assert_eq!(addrs.num_mempool_txs(P2SH, anyone_slice), 0);
         assert_eq!(
             db_script_txs.page_txs(0, P2SH, anyone_slice)?,
-            vec![1, 2, 3, 4, 5, 6, 7]
+            vec![1, 2, 3, 4, 5, 6, 7],
         );
         assert_eq!(
             db_script_txs.page_txs(1, P2SH, anyone_slice)?,
@@ -157,11 +157,18 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
             260_000_000,
         ));
     }
+    assert_eq!(
+        slp_indexer.utxos().utxo_state(&utxos[0].0)?,
+        UtxoState {
+            height: Some(1),
+            state: UtxoStateVariant::Unspent,
+        },
+    );
 
     let (outpoint, value) = utxos.pop().unwrap();
     let leftover_value = value - 20_000;
     let tx1 = build_tx(
-        outpoint,
+        outpoint.clone(),
         &anyone_script,
         vec![
             TxOutput {
@@ -247,6 +254,33 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
             ],
         )?;
     }
+    assert_eq!(
+        slp_indexer.utxos().utxo_state(&outpoint)?,
+        UtxoState {
+            height: Some(10),
+            state: UtxoStateVariant::Spent,
+        },
+    );
+    assert_eq!(
+        slp_indexer.utxos().utxo_state(&OutPoint {
+            txid: txid1.clone(),
+            out_idx: 1
+        })?,
+        UtxoState {
+            height: None,
+            state: UtxoStateVariant::Unspent,
+        },
+    );
+    assert_eq!(
+        slp_indexer.utxos().utxo_state(&OutPoint {
+            txid: txid1.clone(),
+            out_idx: 2
+        })?,
+        UtxoState {
+            height: None,
+            state: UtxoStateVariant::NoSuchOutput,
+        },
+    );
 
     bitcoind.cmd_string("setmocktime", &["2100000001"])?;
     let (outpoint, value) = utxos.pop().unwrap();
@@ -394,7 +428,7 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
         version: 1,
         inputs: vec![
             TxInput {
-                prev_out: outpoint,
+                prev_out: outpoint.clone(),
                 script: Script::new(anyone_script.bytecode().ser()),
                 ..Default::default()
             },
@@ -585,6 +619,33 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
             ],
         )?;
     }
+    assert_eq!(
+        slp_indexer.utxos().utxo_state(&outpoint)?,
+        UtxoState {
+            height: Some(8),
+            state: UtxoStateVariant::Spent,
+        },
+    );
+    assert_eq!(
+        slp_indexer.utxos().utxo_state(&OutPoint {
+            txid: txid1.clone(),
+            out_idx: 1,
+        })?,
+        UtxoState {
+            height: None,
+            state: UtxoStateVariant::Spent,
+        },
+    );
+    assert_eq!(
+        slp_indexer.utxos().utxo_state(&OutPoint {
+            txid: txid3.clone(),
+            out_idx: 1,
+        })?,
+        UtxoState {
+            height: None,
+            state: UtxoStateVariant::Unspent,
+        },
+    );
 
     let tip = slp_indexer.db().blocks()?.tip()?.unwrap();
     let tx1 = tx1.hashed();
@@ -812,6 +873,16 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
             ],
         )?;
     }
+    assert_eq!(
+        slp_indexer.utxos().utxo_state(&OutPoint {
+            txid: txid3,
+            out_idx: 1,
+        })?,
+        UtxoState {
+            height: None,
+            state: UtxoStateVariant::NoSuchTx,
+        },
+    );
 
     Ok(())
 }
