@@ -4,11 +4,10 @@ use axum::{
     extract::{Extension, Path, Query},
     routing, AddExtensionLayer, Router,
 };
-use bitcoinsuite_core::{Hashed, Sha256d};
-use bitcoinsuite_slp::{SlpTokenType, SlpTxTypeVariant};
-
+use bitcoinsuite_core::{Hashed, OutPoint, Sha256d};
 use bitcoinsuite_error::{ErrorMeta, Report};
-use chronik_indexer::SlpIndexer;
+use bitcoinsuite_slp::{SlpTokenType, SlpTxTypeVariant};
+use chronik_indexer::{SlpIndexer, UtxoStateVariant};
 
 use thiserror::Error;
 use tokio::sync::RwLock;
@@ -57,6 +56,7 @@ impl ChronikServer {
                 "/script/:type/:payload/utxos",
                 routing::get(handle_script_utxos),
             )
+            .route("/validate-utxos", routing::post(handle_validate_utxos))
             .layer(AddExtensionLayer::new(self));
 
         axum::Server::bind(&addr)
@@ -179,4 +179,32 @@ async fn handle_script_utxos(
         })
         .collect::<Vec<_>>();
     Ok(Protobuf(proto::Utxos { utxos }))
+}
+
+async fn handle_validate_utxos(
+    Protobuf(request): Protobuf<proto::ValidateUtxoRequest>,
+    Extension(server): Extension<ChronikServer>,
+) -> Result<Protobuf<proto::ValidateUtxoResponse>, ReportError> {
+    let slp_indexer = server.slp_indexer.read().await;
+    let utxo_states = request
+        .outpoints
+        .iter()
+        .map(|outpoint| {
+            let utxo_state = slp_indexer.utxos().utxo_state(&OutPoint {
+                txid: Sha256d::from_slice(&outpoint.txid)?,
+                out_idx: outpoint.out_idx,
+            })?;
+            Ok(proto::UtxoState {
+                height: utxo_state.height.unwrap_or_default(),
+                is_confirmed: utxo_state.height.is_some(),
+                state: match utxo_state.state {
+                    UtxoStateVariant::Unspent => proto::UtxoStateVariant::Unspent,
+                    UtxoStateVariant::Spent => proto::UtxoStateVariant::Spent,
+                    UtxoStateVariant::NoSuchTx => proto::UtxoStateVariant::NoSuchTx,
+                    UtxoStateVariant::NoSuchOutput => proto::UtxoStateVariant::NoSuchOutput,
+                } as i32,
+            })
+        })
+        .collect::<Result<Vec<_>, Report>>()?;
+    Ok(Protobuf(proto::ValidateUtxoResponse { utxo_states }))
 }

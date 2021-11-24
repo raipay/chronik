@@ -83,7 +83,7 @@ async fn test_server() -> Result<()> {
     let utxo = utxos.pop().unwrap();
     let leftover_value = utxo.output.value - 20_000;
     let tx = build_tx(
-        utxo.outpoint,
+        utxo.outpoint.clone(),
         &anyone1_script,
         vec![
             TxOutput {
@@ -259,6 +259,65 @@ async fn test_server() -> Result<()> {
                 time_first_seen: 2_100_000_000,
                 network: proto::Network::Xpi as i32,
             }]
+        }
+    );
+
+    let response = client
+        .post(format!("{}/validate-utxos", url))
+        .header(CONTENT_TYPE, CONTENT_TYPE_PROTOBUF)
+        .body(
+            proto::ValidateUtxoRequest {
+                outpoints: vec![
+                    proto::OutPoint {
+                        txid: utxo.outpoint.txid.as_slice().to_vec(),
+                        out_idx: utxo.outpoint.out_idx,
+                    },
+                    proto::OutPoint {
+                        txid: txid.as_slice().to_vec(),
+                        out_idx: 1,
+                    },
+                    proto::OutPoint {
+                        txid: txid.as_slice().to_vec(),
+                        out_idx: 2,
+                    },
+                    proto::OutPoint {
+                        txid: vec![3; 32],
+                        out_idx: 0,
+                    },
+                ],
+            }
+            .encode_to_vec(),
+        )
+        .send()
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[CONTENT_TYPE], CONTENT_TYPE_PROTOBUF);
+    let proto_utxos = proto::ValidateUtxoResponse::decode(response.bytes().await?)?;
+    assert_eq!(
+        proto_utxos,
+        proto::ValidateUtxoResponse {
+            utxo_states: vec![
+                proto::UtxoState {
+                    height: 10,
+                    is_confirmed: true,
+                    state: proto::UtxoStateVariant::Spent as i32,
+                },
+                proto::UtxoState {
+                    height: 0,
+                    is_confirmed: false,
+                    state: proto::UtxoStateVariant::Unspent as i32,
+                },
+                proto::UtxoState {
+                    height: 0,
+                    is_confirmed: false,
+                    state: proto::UtxoStateVariant::NoSuchOutput as i32,
+                },
+                proto::UtxoState {
+                    height: 0,
+                    is_confirmed: false,
+                    state: proto::UtxoStateVariant::NoSuchTx as i32,
+                }
+            ],
         }
     );
 

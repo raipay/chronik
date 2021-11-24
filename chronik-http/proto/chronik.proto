@@ -2,6 +2,14 @@ syntax = "proto3";
 
 package chronik;
 
+message ValidateUtxoRequest {
+    repeated OutPoint outpoints = 1;
+}
+
+message ValidateUtxoResponse {
+    repeated UtxoState utxo_states = 1;
+}
+
 message Tx {
     bytes txid = 1;
     int32 version = 2;
@@ -113,6 +121,19 @@ enum Network {
     XEC = 1;
     XPI = 2;
     XRG = 3;
+}
+
+message UtxoState {
+    int32 height = 1;
+    bool is_confirmed = 2;
+    UtxoStateVariant state = 3;
+}
+
+enum UtxoStateVariant {
+    UNSPENT = 0;
+    SPENT = 1;
+    NO_SUCH_TX = 2;
+    NO_SUCH_OUTPUT = 3;
 }
 
 message Error {
