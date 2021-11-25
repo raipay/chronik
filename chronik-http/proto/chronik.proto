@@ -136,6 +136,38 @@ enum UtxoStateVariant {
     NO_SUCH_OUTPUT = 3;
 }
 
+message Subscription {
+    string script_type = 1;
+    bytes payload = 2;
+    bool is_subscribe = 3;
+}
+
+message SubscribeMsg {
+    oneof msg_type {
+        Error error = 1;
+        MsgAddedToMempool AddedToMempool = 2;
+        MsgRemovedFromMempool RemovedFromMempool = 3;
+        MsgConfirmed Confirmed = 4;
+        MsgReorg Reorg = 5;
+    }
+}
+
+message MsgAddedToMempool {
+    bytes txid = 1;
+}
+
+message MsgRemovedFromMempool {
+    bytes txid = 1;
+}
+
+message MsgConfirmed {
+    bytes txid = 1;
+}
+
+message MsgReorg {
+    bytes txid = 1;
+}
+
 message Error {
     string error_code = 1;
     string msg = 2;

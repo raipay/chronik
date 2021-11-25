@@ -1,4 +1,4 @@
-use std::{ffi::OsString, str::FromStr, sync::Arc};
+use std::{ffi::OsString, str::FromStr, sync::Arc, time::Duration};
 
 use bitcoinsuite_bitcoind::instance::{BitcoindChain, BitcoindConf, BitcoindInstance};
 use bitcoinsuite_bitcoind_nng::{PubInterface, RpcInterface};
@@ -8,17 +8,19 @@ use bitcoinsuite_core::{
 };
 use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
 use bitcoinsuite_error::Result;
-use bitcoinsuite_test_utils::{bin_folder, pick_ports};
+use bitcoinsuite_test_utils::{bin_folder, is_free_tcp, pick_ports};
 use bitcoinsuite_test_utils_blockchain::build_tx;
 use chronik_http::{proto, ChronikServer, CONTENT_TYPE_PROTOBUF};
 use chronik_indexer::SlpIndexer;
 use chronik_rocksdb::{Db, IndexDb, IndexMemData, PayloadPrefix, ScriptTxsConf};
+use futures::{SinkExt, StreamExt};
 use hyper::{header::CONTENT_TYPE, StatusCode};
 use pretty_assertions::assert_eq;
 use prost::Message;
 use reqwest::Response;
 use tempdir::TempDir;
-use tokio::sync::RwLock;
+use tokio::{sync::RwLock, time::timeout};
+use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_server() -> Result<()> {
@@ -80,6 +82,40 @@ async fn test_server() -> Result<()> {
     let anyone2_slice = anyone2_hash.as_slice();
     let anyone2_address = CashAddress::from_hash(BCHREG, AddressType::P2SH, anyone2_hash.clone());
 
+    let slp_indexer = Arc::new(RwLock::new(slp_indexer));
+
+    let port = pick_ports(1)?[0];
+    let server = ChronikServer {
+        addr: ([127, 0, 0, 1], port).into(),
+        slp_indexer: Arc::clone(&slp_indexer),
+    };
+    tokio::spawn(server.run());
+    let mut attempt = 0i32;
+    while is_free_tcp(port) {
+        if attempt == 100 {
+            panic!("Unable to start Chronik server");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        attempt += 1;
+    }
+
+    let client = reqwest::Client::new();
+    let url = format!("http://127.0.0.1:{}", port);
+    let ws_url = format!("ws://127.0.0.1:{}", port);
+
+    let (mut ws_client, response) = connect_async(format!("{}/ws", ws_url)).await?;
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    ws_client
+        .send(WsMessage::binary(
+            proto::Subscription {
+                script_type: "p2sh".to_string(),
+                payload: anyone1_slice.to_vec(),
+                is_subscribe: true,
+            }
+            .encode_to_vec(),
+        ))
+        .await?;
+
     let utxo = utxos.pop().unwrap();
     let leftover_value = utxo.output.value - 20_000;
     let tx = build_tx(
@@ -98,19 +134,20 @@ async fn test_server() -> Result<()> {
     );
     let txid_hex = bitcoind.cmd_string("sendrawtransaction", &[&tx.ser().hex()])?;
     let txid = Sha256d::from_hex_be(&txid_hex)?;
-    slp_indexer.process_next_msg()?;
-    let slp_indexer = Arc::new(RwLock::new(slp_indexer));
+    slp_indexer.write().await.process_next_msg()?;
 
-    let port = pick_ports(1)?[0];
-    let server = ChronikServer {
-        addr: ([127, 0, 0, 1], port).into(),
-        slp_indexer,
-    };
-
-    tokio::spawn(server.run());
-
-    let client = reqwest::Client::new();
-    let url = format!("http://127.0.0.1:{}", port);
+    // msg from ws (within 50ms)
+    let msg = timeout(Duration::from_millis(50), ws_client.next())
+        .await?
+        .unwrap()?;
+    let msg = msg.into_data();
+    let msg = proto::SubscribeMsg::decode(msg.as_slice())?;
+    match msg.msg_type.unwrap() {
+        proto::subscribe_msg::MsgType::AddedToMempool(added_to_mempool) => {
+            assert_eq!(added_to_mempool.txid, txid.as_slice());
+        }
+        _ => panic!("Unexpected message"),
+    }
 
     let response = client.get(format!("{}/tx/ab", url)).send().await?;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);

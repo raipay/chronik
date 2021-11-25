@@ -1,16 +1,22 @@
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use axum::{
-    extract::{Extension, Path, Query},
+    extract::{
+        ws::{self, WebSocket, WebSocketUpgrade},
+        Extension, Path, Query,
+    },
+    response::IntoResponse,
     routing, AddExtensionLayer, Router,
 };
 use bitcoinsuite_core::{Hashed, OutPoint, Sha256d};
 use bitcoinsuite_error::{ErrorMeta, Report};
 use bitcoinsuite_slp::{SlpTokenType, SlpTxTypeVariant};
-use chronik_indexer::{SlpIndexer, UtxoStateVariant};
-
+use chronik_indexer::{subscribers::SubscribeMessage, SlpIndexer, UtxoStateVariant};
+use chronik_rocksdb::PayloadPrefix;
+use futures::future::select_all;
+use prost::Message;
 use thiserror::Error;
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 
 pub const DEFAULT_PAGE_SIZE: usize = 25;
 pub const MAX_PAGE_SIZE: usize = 200;
@@ -32,11 +38,15 @@ pub enum ChronikServerError {
     #[invalid_user_input()]
     #[error("Invalid {name}: {value}")]
     InvalidField { name: &'static str, value: String },
+
+    #[invalid_client_input()]
+    #[error("Unexpected message type {0}")]
+    UnexpectedMessageType(&'static str),
 }
 
 use crate::{
     convert::{network_to_proto, parse_payload_prefix, rich_tx_to_proto, slp_token_to_proto},
-    error::ReportError,
+    error::{report_to_status_proto, ReportError},
     proto,
     protobuf::Protobuf,
 };
@@ -57,6 +67,7 @@ impl ChronikServer {
                 routing::get(handle_script_utxos),
             )
             .route("/validate-utxos", routing::post(handle_validate_utxos))
+            .route("/ws", routing::get(handle_subscribe))
             .layer(AddExtensionLayer::new(self));
 
         axum::Server::bind(&addr)
@@ -207,4 +218,143 @@ async fn handle_validate_utxos(
         })
         .collect::<Result<Vec<_>, Report>>()?;
     Ok(Protobuf(proto::ValidateUtxoResponse { utxo_states }))
+}
+
+async fn handle_subscribe(
+    ws: WebSocketUpgrade,
+    Extension(server): Extension<ChronikServer>,
+) -> impl IntoResponse {
+    ws.on_upgrade(|ws| handle_subscribe_socket(ws, server))
+}
+
+enum SubscribeAction {
+    Close,
+    Message(ws::Message),
+    Subscribe {
+        script_payload: (PayloadPrefix, Vec<u8>),
+        is_subscribe: bool,
+    },
+    Nothing,
+}
+
+fn subscribe_client_msg_action(
+    client_msg: Option<Result<ws::Message, axum::Error>>,
+) -> Result<SubscribeAction, Report> {
+    let client_msg = match client_msg {
+        Some(client_msg) => client_msg,
+        None => return Ok(SubscribeAction::Close),
+    };
+    match client_msg {
+        Ok(ws::Message::Binary(client_msg)) => {
+            let subscription = proto::Subscription::decode(client_msg.as_slice())?;
+            let payload_prefix =
+                parse_payload_prefix(subscription.script_type, subscription.payload.len())?;
+            Ok(SubscribeAction::Subscribe {
+                script_payload: (payload_prefix, subscription.payload),
+                is_subscribe: subscription.is_subscribe,
+            })
+        }
+        Ok(ws::Message::Ping(ping)) => Ok(SubscribeAction::Message(ws::Message::Pong(ping))),
+        Ok(ws::Message::Text(_)) => Err(UnexpectedMessageType("Text").into()),
+        Ok(ws::Message::Pong(_pong)) => Ok(SubscribeAction::Nothing),
+        Ok(ws::Message::Close(_)) | Err(_) => Ok(SubscribeAction::Close),
+    }
+}
+
+fn subscribe_script_msg_action(
+    script_msg: Result<SubscribeMessage, broadcast::error::RecvError>,
+) -> Result<SubscribeAction, Report> {
+    use proto::subscribe_msg::MsgType;
+    let script_msg = match script_msg {
+        Ok(script_msg) => script_msg,
+        Err(_) => return Ok(SubscribeAction::Nothing),
+    };
+    let msg_type = Some(match script_msg {
+        SubscribeMessage::AddedToMempool(txid) => {
+            MsgType::AddedToMempool(proto::MsgAddedToMempool {
+                txid: txid.as_slice().to_vec(),
+            })
+        }
+        SubscribeMessage::RemovedFromMempool(txid) => {
+            MsgType::RemovedFromMempool(proto::MsgRemovedFromMempool {
+                txid: txid.as_slice().to_vec(),
+            })
+        }
+        SubscribeMessage::Confirmed(txid) => MsgType::Confirmed(proto::MsgConfirmed {
+            txid: txid.as_slice().to_vec(),
+        }),
+        SubscribeMessage::Reorg(txid) => MsgType::Reorg(proto::MsgReorg {
+            txid: txid.as_slice().to_vec(),
+        }),
+    });
+    let msg_proto = proto::SubscribeMsg { msg_type };
+    let msg = ws::Message::Binary(msg_proto.encode_to_vec());
+    Ok(SubscribeAction::Message(msg))
+}
+
+async fn handle_subscribe_socket(mut socket: WebSocket, server: ChronikServer) {
+    let mut subbed_scripts =
+        HashMap::<(PayloadPrefix, Vec<u8>), broadcast::Receiver<SubscribeMessage>>::new();
+    loop {
+        let subscribe_action = if subbed_scripts.is_empty() {
+            let client_msg = socket.recv().await;
+            subscribe_client_msg_action(client_msg)
+        } else {
+            let script_receivers = select_all(
+                subbed_scripts
+                    .values_mut()
+                    .map(|receiver| Box::pin(receiver.recv())),
+            );
+            tokio::select! {
+                client_msg = socket.recv() => subscribe_client_msg_action(client_msg),
+                (script_msg, _, _) = script_receivers => subscribe_script_msg_action(script_msg),
+            }
+        };
+
+        let subscribe_action = match subscribe_action {
+            Ok(subscribe_action) => subscribe_action,
+            // Turn Err into Message
+            Err(report) => {
+                let (_, Protobuf(error_proto)) = report_to_status_proto(&report);
+                SubscribeAction::Message(ws::Message::Binary(error_proto.encode_to_vec()))
+            }
+        };
+
+        let subscribe_action = match subscribe_action {
+            // Send Message, do either Close or Nothing
+            SubscribeAction::Message(msg) => match socket.send(msg).await {
+                Ok(()) => SubscribeAction::Nothing,
+                Err(_) => SubscribeAction::Close,
+            },
+            other => other,
+        };
+
+        match subscribe_action {
+            SubscribeAction::Close => {
+                if !subbed_scripts.is_empty() {
+                    let mut slp_indexer = server.slp_indexer.write().await;
+                    for (script_payload, receiver) in subbed_scripts {
+                        std::mem::drop(receiver);
+                        slp_indexer.subscribers_mut().unsubscribe(&script_payload);
+                    }
+                }
+                return;
+            }
+            SubscribeAction::Message(_) => unreachable!(),
+            SubscribeAction::Subscribe {
+                script_payload,
+                is_subscribe,
+            } => {
+                let mut slp_indexer = server.slp_indexer.write().await;
+                if is_subscribe {
+                    let receiver = slp_indexer.subscribers_mut().subscribe(&script_payload);
+                    subbed_scripts.insert(script_payload, receiver);
+                } else {
+                    std::mem::drop(subbed_scripts.remove(&script_payload));
+                    slp_indexer.subscribers_mut().unsubscribe(&script_payload);
+                }
+            }
+            SubscribeAction::Nothing => {}
+        }
+    }
 }
