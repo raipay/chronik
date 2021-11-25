@@ -429,6 +429,7 @@ dependencies = [
  "pretty_assertions",
  "tempdir",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

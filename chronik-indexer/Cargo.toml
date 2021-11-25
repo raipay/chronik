@@ -13,6 +13,9 @@ bitcoinsuite-bitcoind-nng = { path="../../bitcoinsuite/bitcoinsuite-bitcoind-nng
 bitcoinsuite-bitcoind = { path="../../bitcoinsuite/bitcoinsuite-bitcoind" }
 bitcoinsuite-test-utils = { path = "../../bitcoinsuite/bitcoinsuite-test-utils" }
 
+# Async
+tokio = { version = "1.14", features = ["full"] }
+
 hex = "0.4"
 
 # Error handling

@@ -1,4 +1,4 @@
-use std::{ffi::OsString, str::FromStr, sync::Arc};
+use std::{collections::HashSet, ffi::OsString, str::FromStr, sync::Arc, time::Duration};
 
 use bitcoinsuite_bitcoind::{
     cli::BitcoinCli,
@@ -18,13 +18,14 @@ use bitcoinsuite_slp::{
 };
 use bitcoinsuite_test_utils::bin_folder;
 use bitcoinsuite_test_utils_blockchain::build_tx;
-use chronik_indexer::{SlpIndexer, UtxoState, UtxoStateVariant};
+use chronik_indexer::{subscribers::SubscribeMessage, SlpIndexer, UtxoState, UtxoStateVariant};
 use chronik_rocksdb::{Db, IndexDb, IndexMemData, MempoolTxEntry, PayloadPrefix, ScriptTxsConf};
 use pretty_assertions::{assert_eq, assert_ne};
 use tempdir::TempDir;
+use tokio::time::timeout;
 
-#[test]
-fn test_mempool() -> Result<()> {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_mempool() -> Result<()> {
     bitcoinsuite_error::install()?;
     let dir = TempDir::new("slp-indexer-test-mempool")?;
     let pub_url = format!("ipc://{}", dir.path().join("pub.pipe").to_string_lossy());
@@ -60,12 +61,12 @@ fn test_mempool() -> Result<()> {
         Arc::new(EccSecp256k1::default()),
     )?;
     bitcoind.cmd_string("setmocktime", &["2100000000"])?;
-    test_index_mempool(&mut slp_indexer, bitcoind)?;
+    test_index_mempool(&mut slp_indexer, bitcoind).await?;
     instance.cleanup()?;
     Ok(())
 }
 
-fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Result<()> {
+async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Result<()> {
     use PayloadPrefix::P2SH;
     let anyone_script = Script::from_slice(&[0x51]);
     let anyone_hash = ShaRmd160::digest(anyone_script.bytecode().clone());
@@ -95,6 +96,11 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
     bitcoind.cmd_json("generatetoaddress", &["100", burn_address.as_str()])?;
     while !slp_indexer.catchup_step()? {}
     slp_indexer.leave_catchup()?;
+
+    let dt_timeout = Duration::from_secs(3);
+    let mut receiver = slp_indexer
+        .subscribers_mut()
+        .subscribe(&(P2SH, anyone_slice.to_vec()));
 
     let utxo_entries = slp_indexer.db().utxos()?.utxos(P2SH, anyone_slice)?;
     assert_eq!(utxo_entries.len(), 10);
@@ -202,6 +208,10 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
         network: Network::XPI,
     };
     slp_indexer.process_next_msg()?;
+    match timeout(dt_timeout, receiver.recv()).await?? {
+        SubscribeMessage::AddedToMempool(txid) => assert_eq!(txid, txid1),
+        _ => panic!("Wrong message received"),
+    }
     assert_eq!(
         slp_indexer.db_mempool().tx(&txid1),
         Some(&MempoolTxEntry {
@@ -336,6 +346,10 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
         network: Network::XPI,
     };
     slp_indexer.process_next_msg()?;
+    match timeout(dt_timeout, receiver.recv()).await?? {
+        SubscribeMessage::AddedToMempool(txid) => assert_eq!(txid, txid2),
+        _ => panic!("Wrong message received"),
+    }
     assert_eq!(
         slp_indexer.db_mempool().tx(&txid2),
         Some(&MempoolTxEntry {
@@ -509,6 +523,10 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
         network: Network::XPI,
     };
     slp_indexer.process_next_msg()?;
+    match timeout(dt_timeout, receiver.recv()).await?? {
+        SubscribeMessage::AddedToMempool(txid) => assert_eq!(txid, txid3),
+        _ => panic!("Wrong message received"),
+    }
     assert_eq!(
         slp_indexer.db_mempool().tx(&txid3),
         Some(&MempoolTxEntry {
@@ -649,11 +667,13 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
 
     let tip = slp_indexer.db().blocks()?.tip()?.unwrap();
     let tx1 = tx1.hashed();
+    let coinbase_tx = build_lotus_coinbase(tip.height + 1, anyone_script.to_p2sh());
+    let coinbase_txid = lotus_txid(&coinbase_tx);
     let block1 = build_lotus_block(
         tip.hash.clone(),
         tip.timestamp + 1,
         tip.height + 1,
-        build_lotus_coinbase(tip.height + 1, anyone_script.to_p2sh()).hashed(),
+        coinbase_tx.hashed(),
         vec![tx1.clone()],
         Sha256d::default(),
         vec![],
@@ -662,6 +682,18 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
     assert_eq!(result, "");
 
     slp_indexer.process_next_msg()?;
+
+    let mut subbed_txids = HashSet::new();
+    for _ in 0..2 {
+        subbed_txids.insert(match timeout(dt_timeout, receiver.recv()).await?? {
+            SubscribeMessage::Confirmed(txid) => txid,
+            _ => panic!("Wrong message received"),
+        });
+    }
+    assert_eq!(
+        subbed_txids,
+        [&coinbase_txid, &txid1].into_iter().cloned().collect()
+    );
     let block_tx = slp_indexer.db().txs()?.by_txid(&txid1)?.unwrap();
     assert_eq!(block_tx.entry.txid, txid1);
     assert_eq!(block_tx.entry.tx_size, tx1.raw().len() as u32);
@@ -731,11 +763,14 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
     let tip = slp_indexer.db().blocks()?.tip()?.unwrap();
     let tx2 = tx2.hashed();
     let tx3 = tx3.hashed();
+    let txid3_modified = lotus_txid(tx3.unhashed_tx());
+    let coinbase_tx = build_lotus_coinbase(tip.height + 1, anyone_script.to_p2sh());
+    let coinbase_txid = lotus_txid(&coinbase_tx);
     let block2 = build_lotus_block(
         tip.hash.clone(),
         tip.timestamp + 1,
         tip.height + 1,
-        build_lotus_coinbase(tip.height + 1, anyone_script.to_p2sh()).hashed(),
+        coinbase_tx.hashed(),
         vec![tx2.clone(), tx3.clone()],
         Sha256d::default(),
         vec![],
@@ -745,8 +780,26 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
 
     // Remove tx3 from mempool
     slp_indexer.process_next_msg()?;
+    match timeout(dt_timeout, receiver.recv()).await?? {
+        SubscribeMessage::RemovedFromMempool(txid) => assert_eq!(txid, txid3),
+        _ => panic!("Wrong message received"),
+    }
     // Process block
     slp_indexer.process_next_msg()?;
+    let mut subbed_txids = HashSet::new();
+    for _ in 0..3 {
+        subbed_txids.insert(match timeout(dt_timeout, receiver.recv()).await?? {
+            SubscribeMessage::Confirmed(txid) => txid,
+            _ => panic!("Wrong message received"),
+        });
+    }
+    assert_eq!(
+        subbed_txids,
+        [&coinbase_txid, &txid2, &txid3_modified]
+            .into_iter()
+            .cloned()
+            .collect()
+    );
 
     assert_eq!(slp_indexer.db_mempool().tx(&txid1), None);
     assert_eq!(slp_indexer.db_mempool().tx(&txid2), None);
@@ -759,7 +812,6 @@ fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
 
     assert_eq!(slp_indexer.db().txs()?.by_txid(&txid3)?, None);
 
-    let txid3_modified = lotus_txid(tx3.unhashed_tx());
     assert_ne!(txid3, txid3_modified);
     let block_tx = slp_indexer.db().txs()?.by_txid(&txid3_modified)?.unwrap();
     assert_eq!(block_tx.entry.txid, txid3_modified);

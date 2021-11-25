@@ -1,6 +1,7 @@
 mod blocks;
 mod indexer;
 mod script_history;
+pub mod subscribers;
 mod txs;
 mod utxos;
 
