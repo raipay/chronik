@@ -80,8 +80,8 @@ impl<'a> UtxosWriter<'a> {
             let txid = txids_fn(tx_idx);
             new_tx_nums.insert(txid.clone(), tx_num);
             for (out_idx, output) in tx.outputs.iter().enumerate() {
-                for (payload_prefix, mut script_payload) in script_payloads(&output.script) {
-                    script_payload.insert(0, payload_prefix as u8);
+                for script_payload in script_payloads(&output.script) {
+                    let script_payload = script_payload.payload.into_vec();
                     let outpoints = output_outpoints.entry(script_payload).or_insert(vec![]);
                     outpoints.push((tx_num, out_idx as u32));
                 }
@@ -124,8 +124,8 @@ impl<'a> UtxosWriter<'a> {
                 .enumerate()
             {
                 let spent_script = block_spent_script_fn(tx_pos, input_idx);
-                for (payload_prefix, mut script_payload) in script_payloads(spent_script) {
-                    script_payload.insert(0, payload_prefix as u8);
+                for script_payload in script_payloads(spent_script) {
+                    let script_payload = script_payload.payload.into_vec();
                     let outpoints = input_outpoints.entry(script_payload).or_insert(vec![]);
                     outpoints.push((spent_tx_num, input.prev_out.out_idx));
                 }
@@ -206,8 +206,8 @@ impl<'a> UtxosWriter<'a> {
                         .tx_num_by_txid(&input.prev_out.txid)?
                         .ok_or_else(|| UnknownInputSpent(input.prev_out.clone()))?,
                 };
-                for (payload_prefix, mut script_payload) in script_payloads(spent_script) {
-                    script_payload.insert(0, payload_prefix as u8);
+                for script_payload in script_payloads(spent_script) {
+                    let script_payload = script_payload.payload.into_vec();
                     update_map_or_db_entry(
                         self.db,
                         self.cf_utxos(),
@@ -229,8 +229,8 @@ impl<'a> UtxosWriter<'a> {
         let mut tx_num = first_tx_num;
         for tx in txs {
             for (out_idx, output) in tx.outputs.iter().enumerate() {
-                for (payload_prefix, mut script_payload) in script_payloads(&output.script) {
-                    script_payload.insert(0, payload_prefix as u8);
+                for script_payload in script_payloads(&output.script) {
+                    let script_payload = script_payload.payload.into_vec();
                     update_map_or_db_entry(
                         self.db,
                         self.cf_utxos(),

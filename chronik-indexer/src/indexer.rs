@@ -405,6 +405,7 @@ impl SlpIndexer {
         let mut notified_payloads = HashSet::new();
         for script in spent_scripts.into_iter().chain(output_scripts) {
             for script_payload in script_payloads(script) {
+                let script_payload = script_payload.payload;
                 if !notified_payloads.contains(&script_payload) {
                     subscribers.broadcast(&script_payload, msg.clone());
                     notified_payloads.insert(script_payload);

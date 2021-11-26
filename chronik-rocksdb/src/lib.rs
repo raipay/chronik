@@ -25,7 +25,7 @@ pub use crate::mempool::*;
 pub use crate::mempool_data::*;
 pub use crate::mempool_slp_data::*;
 pub use crate::outpoint_data::OutpointEntry;
-pub use crate::script_payload::{script_payloads, PayloadPrefix};
+pub use crate::script_payload::*;
 pub use crate::script_txs::*;
 pub use crate::slp::*;
 pub use crate::slp_batch::*;

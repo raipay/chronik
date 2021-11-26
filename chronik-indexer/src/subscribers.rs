@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use bitcoinsuite_core::Sha256d;
-use chronik_rocksdb::PayloadPrefix;
+use chronik_rocksdb::ScriptPayload;
 use tokio::sync::broadcast;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,14 +16,11 @@ const CHANNEL_CAPACITY: usize = 16;
 
 #[derive(Debug, Clone, Default)]
 pub struct Subscribers {
-    subs: HashMap<(PayloadPrefix, Vec<u8>), broadcast::Sender<SubscribeMessage>>,
+    subs: HashMap<ScriptPayload, broadcast::Sender<SubscribeMessage>>,
 }
 
 impl Subscribers {
-    pub fn subscribe(
-        &mut self,
-        script: &(PayloadPrefix, Vec<u8>),
-    ) -> broadcast::Receiver<SubscribeMessage> {
+    pub fn subscribe(&mut self, script: &ScriptPayload) -> broadcast::Receiver<SubscribeMessage> {
         match self.subs.get(script) {
             Some(sender) => sender.subscribe(),
             None => {
@@ -35,7 +32,7 @@ impl Subscribers {
     }
 
     /// Clean unsubscribe
-    pub fn unsubscribe(&mut self, script: &(PayloadPrefix, Vec<u8>)) {
+    pub fn unsubscribe(&mut self, script: &ScriptPayload) {
         if let Some(sender) = self.subs.get(script) {
             if sender.receiver_count() == 0 {
                 self.subs.remove(script);
@@ -43,7 +40,7 @@ impl Subscribers {
         }
     }
 
-    pub(crate) fn broadcast(&mut self, script: &(PayloadPrefix, Vec<u8>), msg: SubscribeMessage) {
+    pub(crate) fn broadcast(&mut self, script: &ScriptPayload, msg: SubscribeMessage) {
         if let Some(sender) = self.subs.get(script) {
             // Unclean unsubscribe
             if sender.send(msg).is_err() {

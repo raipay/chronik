@@ -136,8 +136,8 @@ fn prepare_tx_nums_by_payload<'b>(
     for (tx_idx, tx) in txs.iter().enumerate() {
         let tx_num = first_tx_num + tx_idx as u64;
         for output in &tx.outputs {
-            for (payload_prefix, mut script_payload) in script_payloads(&output.script) {
-                script_payload.insert(0, payload_prefix as u8);
+            for script_payload in script_payloads(&output.script) {
+                let script_payload = script_payload.payload.into_vec();
                 let tx_nums = payload_tx_nums.entry(script_payload).or_default();
                 tx_nums.insert(tx_num);
             }
@@ -149,8 +149,8 @@ fn prepare_tx_nums_by_payload<'b>(
         let tx_pos = tx_idx - 1;
         for input_idx in 0..tx.inputs.len() {
             let spent_script = block_spent_script_fn(tx_pos, input_idx);
-            for (payload_prefix, mut script_payload) in script_payloads(spent_script) {
-                script_payload.insert(0, payload_prefix as u8);
+            for script_payload in script_payloads(spent_script) {
+                let script_payload = script_payload.payload.into_vec();
                 let tx_nums = payload_tx_nums.entry(script_payload).or_default();
                 tx_nums.insert(tx_num);
             }

@@ -83,8 +83,8 @@ impl MempoolData {
                 txid: txid.clone(),
                 out_idx: out_idx as u32,
             };
-            for (prefix, mut script_payload) in script_payloads(&output.script) {
-                script_payload.insert(0, prefix as u8);
+            for script_payload in script_payloads(&output.script) {
+                let script_payload = script_payload.payload.into_vec();
                 let script_payload = Bytes::from_bytes(script_payload);
                 {
                     if !self.script_txs.contains_key(&script_payload) {
@@ -110,8 +110,8 @@ impl MempoolData {
             }
         }
         for (input_idx, (input, spent_output)) in tx.inputs.iter().zip(&spent_outputs).enumerate() {
-            for (prefix, mut script_payload) in script_payloads(&spent_output.script) {
-                script_payload.insert(0, prefix as u8);
+            for script_payload in script_payloads(&spent_output.script) {
+                let script_payload = script_payload.payload.into_vec();
                 let script_payload = Bytes::from_bytes(script_payload);
                 {
                     if !self.script_txs.contains_key(&script_payload) {
@@ -169,8 +169,8 @@ impl MempoolData {
             None => return Err(NoSuchTx(txid.clone()).into()),
         };
         for (input_idx, (input, spent_output)) in tx.inputs.iter().zip(&spent_outputs).enumerate() {
-            for (prefix, mut script_payload) in script_payloads(&spent_output.script) {
-                script_payload.insert(0, prefix as u8);
+            for script_payload in script_payloads(&spent_output.script) {
+                let script_payload = script_payload.payload.into_vec();
                 let script_payload = Bytes::from_bytes(script_payload);
                 if let Some(txs) = self.script_txs.get_mut(&script_payload) {
                     txs.remove(&(time_first_seen, txid.clone()));
@@ -213,8 +213,8 @@ impl MempoolData {
                 txid: txid.clone(),
                 out_idx: out_idx as u32,
             };
-            for (prefix, mut script_payload) in script_payloads(&output.script) {
-                script_payload.insert(0, prefix as u8);
+            for script_payload in script_payloads(&output.script) {
+                let script_payload = script_payload.payload.into_vec();
                 let script_payload = Bytes::from_bytes(script_payload);
                 if let Some(txs) = self.script_txs.get_mut(&script_payload) {
                     txs.remove(&(time_first_seen, txid.clone()));

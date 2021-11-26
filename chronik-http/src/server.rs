@@ -12,7 +12,7 @@ use bitcoinsuite_core::{Hashed, OutPoint, Sha256d};
 use bitcoinsuite_error::{ErrorMeta, Report};
 use bitcoinsuite_slp::{SlpTokenType, SlpTxTypeVariant};
 use chronik_indexer::{subscribers::SubscribeMessage, SlpIndexer, UtxoStateVariant};
-use chronik_rocksdb::PayloadPrefix;
+use chronik_rocksdb::ScriptPayload;
 use futures::future::select_all;
 use prost::Message;
 use thiserror::Error;
@@ -231,7 +231,7 @@ enum SubscribeAction {
     Close,
     Message(ws::Message),
     Subscribe {
-        script_payload: (PayloadPrefix, Vec<u8>),
+        script_payload: ScriptPayload,
         is_subscribe: bool,
     },
     Nothing,
@@ -250,7 +250,10 @@ fn subscribe_client_msg_action(
             let payload_prefix =
                 parse_payload_prefix(subscription.script_type, subscription.payload.len())?;
             Ok(SubscribeAction::Subscribe {
-                script_payload: (payload_prefix, subscription.payload),
+                script_payload: ScriptPayload {
+                    payload_prefix,
+                    payload_data: subscription.payload,
+                },
                 is_subscribe: subscription.is_subscribe,
             })
         }
@@ -293,8 +296,7 @@ fn subscribe_script_msg_action(
 }
 
 async fn handle_subscribe_socket(mut socket: WebSocket, server: ChronikServer) {
-    let mut subbed_scripts =
-        HashMap::<(PayloadPrefix, Vec<u8>), broadcast::Receiver<SubscribeMessage>>::new();
+    let mut subbed_scripts = HashMap::<ScriptPayload, broadcast::Receiver<SubscribeMessage>>::new();
     loop {
         let subscribe_action = if subbed_scripts.is_empty() {
             let client_msg = socket.recv().await;

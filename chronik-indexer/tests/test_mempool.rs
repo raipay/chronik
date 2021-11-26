@@ -19,7 +19,9 @@ use bitcoinsuite_slp::{
 use bitcoinsuite_test_utils::bin_folder;
 use bitcoinsuite_test_utils_blockchain::build_tx;
 use chronik_indexer::{subscribers::SubscribeMessage, SlpIndexer, UtxoState, UtxoStateVariant};
-use chronik_rocksdb::{Db, IndexDb, IndexMemData, MempoolTxEntry, PayloadPrefix, ScriptTxsConf};
+use chronik_rocksdb::{
+    Db, IndexDb, IndexMemData, MempoolTxEntry, PayloadPrefix, ScriptPayload, ScriptTxsConf,
+};
 use pretty_assertions::{assert_eq, assert_ne};
 use tempdir::TempDir;
 use tokio::time::timeout;
@@ -98,9 +100,10 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
     slp_indexer.leave_catchup()?;
 
     let dt_timeout = Duration::from_secs(3);
-    let mut receiver = slp_indexer
-        .subscribers_mut()
-        .subscribe(&(P2SH, anyone_slice.to_vec()));
+    let mut receiver = slp_indexer.subscribers_mut().subscribe(&ScriptPayload {
+        payload_prefix: P2SH,
+        payload_data: anyone_slice.to_vec(),
+    });
 
     let utxo_entries = slp_indexer.db().utxos()?.utxos(P2SH, anyone_slice)?;
     assert_eq!(utxo_entries.len(), 10);
