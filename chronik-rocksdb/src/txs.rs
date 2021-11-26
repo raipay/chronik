@@ -34,6 +34,7 @@ pub struct TxEntry {
     pub undo_pos: u32,
     pub undo_size: u32,
     pub time_first_seen: i64,
+    pub is_coinbase: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,6 +58,7 @@ struct TxData {
     pub undo_pos: U32<LE>,
     pub undo_size: U32<LE>,
     pub time_first_seen: I64<LE>,
+    pub is_coinbase: u8,
 }
 
 pub struct TxWriter<'a> {
@@ -144,6 +146,7 @@ impl<'a> TxWriter<'a> {
                 undo_pos: U32::new(tx.undo_pos),
                 undo_size: U32::new(tx.undo_size),
                 time_first_seen: I64::new(tx.time_first_seen),
+                is_coinbase: tx.is_coinbase as u8,
             };
             let tx_num = TxNumOrd(TxNumZC::new(next_tx_num));
             batch.put_cf(self.cf_txs, tx_num.as_bytes(), tx_data.as_bytes());
@@ -228,6 +231,7 @@ impl<'a> TxReader<'a> {
                     undo_pos: tx_data.undo_pos.get(),
                     undo_size: tx_data.undo_size.get(),
                     time_first_seen: tx_data.time_first_seen.get(),
+                    is_coinbase: tx_data.is_coinbase != 0,
                 },
                 block_height,
             },
@@ -269,6 +273,7 @@ impl<'a> TxReader<'a> {
                 undo_pos: tx_data.undo_pos.get(),
                 undo_size: tx_data.undo_size.get(),
                 time_first_seen: tx_data.time_first_seen.get(),
+                is_coinbase: tx_data.is_coinbase != 0,
             },
             block_height,
         }))
@@ -361,6 +366,7 @@ mod test {
             undo_pos: 10,
             undo_size: 1,
             time_first_seen: 123456,
+            is_coinbase: true,
         };
         let block_tx1 = BlockTx {
             entry: tx1.clone(),
@@ -394,6 +400,7 @@ mod test {
             undo_pos: 20,
             undo_size: 2,
             time_first_seen: 234567,
+            is_coinbase: false,
         };
         let block_tx2 = BlockTx {
             entry: tx2.clone(),
@@ -406,6 +413,7 @@ mod test {
             undo_pos: 30,
             undo_size: 3,
             time_first_seen: 345678,
+            is_coinbase: false,
         };
         let block_tx3 = BlockTx {
             entry: tx3.clone(),
@@ -469,6 +477,7 @@ mod test {
             undo_pos: 20,
             undo_size: 2,
             time_first_seen: 234567,
+            is_coinbase: false,
         };
         let block_tx2 = BlockTx {
             entry: tx2.clone(),
@@ -481,6 +490,7 @@ mod test {
             undo_pos: 30,
             undo_size: 3,
             time_first_seen: 345678,
+            is_coinbase: false,
         };
         let block_tx3 = BlockTx {
             entry: tx3.clone(),

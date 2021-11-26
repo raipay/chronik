@@ -282,18 +282,20 @@ impl SlpIndexer {
         let db_txs = block
             .txs
             .iter()
-            .map(|tx| {
-                let time_first_seen = match self.db_mempool().tx(&tx.tx.txid) {
+            .zip(&txs)
+            .map(|(block_tx, tx)| {
+                let time_first_seen = match self.db_mempool().tx(&block_tx.tx.txid) {
                     Some(entry) => entry.time_first_seen,
                     None => 0, // indicates unknown
                 };
                 TxEntry {
-                    txid: tx.tx.txid.clone(),
-                    data_pos: tx.data_pos,
-                    tx_size: tx.tx.raw.len() as u32,
-                    undo_pos: tx.undo_pos,
-                    undo_size: tx.undo_size,
+                    txid: block_tx.tx.txid.clone(),
+                    data_pos: block_tx.data_pos,
+                    tx_size: block_tx.tx.raw.len() as u32,
+                    undo_pos: block_tx.undo_pos,
+                    undo_size: block_tx.undo_size,
                     time_first_seen,
+                    is_coinbase: tx.inputs[0].prev_out.is_coinbase(),
                 }
             })
             .collect::<Vec<_>>();

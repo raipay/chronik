@@ -373,6 +373,7 @@ mod test {
                     undo_pos: 0,
                     undo_size: 0,
                     time_first_seen: 0,
+                    is_coinbase: false,
                 });
                 num_txs += 1;
                 txs.push(UnhashedTx {

@@ -199,6 +199,7 @@ fn main() -> Result<()> {
                     undo_pos: 0,
                     undo_size: 0,
                     time_first_seen: 0,
+                    is_coinbase: false,
                 })
                 .collect(),
             block_height: block_height as i32,
