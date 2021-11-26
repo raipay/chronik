@@ -146,7 +146,10 @@ async fn handle_script_utxos(
     })?;
     let prefix = parse_payload_prefix(script_type, payload.len())?;
     let slp_indexer = server.slp_indexer.read().await;
-    let utxos = slp_indexer.utxos().utxos(prefix, &payload)?;
+    let utxos = slp_indexer.utxos().utxos(&ScriptPayload {
+        payload_prefix: prefix,
+        payload_data: payload,
+    })?;
     let utxos = utxos
         .into_iter()
         .map(|utxo| proto::Utxo {

@@ -1,4 +1,4 @@
-use bitcoinsuite_core::{Hashed, Script, ScriptVariant};
+use bitcoinsuite_core::{ecc::PubKey, Hashed, Script, ScriptVariant, ShaRmd160};
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PayloadPrefix {
@@ -103,5 +103,20 @@ impl ScriptPayload {
         let mut script_payload = self.payload_data;
         script_payload.insert(0, self.payload_prefix as u8);
         script_payload
+    }
+
+    pub fn reconstruct_script(&self) -> Option<Script> {
+        let data = self.payload_data.as_slice();
+        Some(match self.payload_prefix {
+            PayloadPrefix::Other => Script::from_slice(data),
+            PayloadPrefix::P2PK => Script::p2pk(&PubKey::new_unchecked(data.try_into().ok()?)),
+            PayloadPrefix::P2PKLegacy => Script::p2pk_legacy(data.try_into().ok()?),
+            PayloadPrefix::P2PKH => Script::p2pkh(&ShaRmd160::from_slice(data).ok()?),
+            PayloadPrefix::P2SH => Script::p2sh(&ShaRmd160::from_slice(data).ok()?),
+            PayloadPrefix::P2TRCommitment => {
+                Script::p2tr(&PubKey::new_unchecked(data.try_into().ok()?), None)
+            }
+            PayloadPrefix::P2TRState => return None,
+        })
     }
 }

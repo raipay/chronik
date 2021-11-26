@@ -15,7 +15,7 @@ use bitcoinsuite_slp::{RichTxBlock, RichUtxo};
 use bitcoinsuite_test_utils::bin_folder;
 use chronik_indexer::SlpIndexer;
 use chronik_rocksdb::{
-    BlockTx, Db, IndexDb, IndexMemData, OutpointEntry, PayloadPrefix, ScriptTxsConf,
+    BlockTx, Db, IndexDb, IndexMemData, OutpointEntry, PayloadPrefix, ScriptPayload, ScriptTxsConf,
     ScriptTxsReader, TxEntry, UtxoEntry, UtxosReader,
 };
 use pretty_assertions::assert_eq;
@@ -146,9 +146,10 @@ fn test_index_genesis(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
         slp_indexer.blocks().block_txs_by_height(0)?,
     );
     assert_eq!(
-        slp_indexer
-            .utxos()
-            .utxos(PayloadPrefix::P2PKLegacy, &genesis_payload)?,
+        slp_indexer.utxos().utxos(&ScriptPayload {
+            payload_prefix: PayloadPrefix::P2PKLegacy,
+            payload_data: genesis_payload.clone()
+        })?,
         vec![RichUtxo {
             outpoint: OutPoint {
                 txid: coinbase_txid,
@@ -221,7 +222,10 @@ fn test_get_out_of_ibd(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> R
         slp_indexer.blocks().block_txs_by_height(1)?,
     );
     assert_eq!(
-        slp_indexer.utxos().utxos(PayloadPrefix::P2SH, &[0; 20])?,
+        slp_indexer.utxos().utxos(&ScriptPayload {
+            payload_prefix: PayloadPrefix::P2SH,
+            payload_data: vec![0; 20],
+        })?,
         vec![RichUtxo {
             outpoint: OutPoint {
                 txid: coinbase_txid,

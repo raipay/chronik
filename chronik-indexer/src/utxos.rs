@@ -1,7 +1,7 @@
-use bitcoinsuite_core::{BitcoinCode, Bytes, OutPoint, Sha256d, UnhashedTx};
+use bitcoinsuite_core::{BitcoinCode, Bytes, OutPoint, Sha256d, TxOutput, UnhashedTx};
 use bitcoinsuite_error::{ErrorMeta, Result};
 use bitcoinsuite_slp::{RichTxBlock, RichUtxo, SlpOutput};
-use chronik_rocksdb::{BlockHeight, PayloadPrefix, TxNum, UtxoDelta};
+use chronik_rocksdb::{BlockHeight, ScriptPayload, TxNum, UtxoDelta};
 use thiserror::Error;
 
 use crate::SlpIndexer;
@@ -33,6 +33,10 @@ pub enum UtxosError {
     #[critical()]
     #[error("Inconsistent db, txid doesn't exist in mempool: {0}")]
     InconsistentNoSuchMempoolTx(Sha256d),
+
+    #[critical()]
+    #[error("Couldn't reconstruct script in output: {0:?}")]
+    CouldntReconstructScript(OutPoint),
 }
 
 use self::UtxosError::*;
@@ -42,7 +46,9 @@ impl<'a> Utxos<'a> {
         Utxos { indexer }
     }
 
-    pub fn utxos(&self, prefix: PayloadPrefix, payload: &[u8]) -> Result<Vec<RichUtxo>> {
+    pub fn utxos(&self, script_payload: &ScriptPayload) -> Result<Vec<RichUtxo>> {
+        let prefix = script_payload.payload_prefix;
+        let payload = &script_payload.payload_data;
         let tx_reader = self.indexer.db().txs()?;
         let block_reader = self.indexer.db().blocks()?;
         let slp_reader = self.indexer.db().slp()?;
@@ -69,14 +75,23 @@ impl<'a> Utxos<'a> {
             let block = block_reader
                 .by_height(block_tx.block_height)?
                 .expect("Inconsistent db");
-            let raw_tx = self.indexer.rpc_interface.get_block_slice(
-                block.file_num,
-                block_tx.entry.data_pos,
-                block_tx.entry.tx_size,
-            )?;
-            let mut raw_tx = Bytes::from_bytes(raw_tx);
-            let tx = UnhashedTx::deser(&mut raw_tx)?;
-            let output = tx.outputs[out_idx].clone();
+            let output = if db_utxo.is_partial_script {
+                let raw_tx = self.indexer.rpc_interface.get_block_slice(
+                    block.file_num,
+                    block_tx.entry.data_pos,
+                    block_tx.entry.tx_size,
+                )?;
+                let mut raw_tx = Bytes::from_bytes(raw_tx);
+                let tx = UnhashedTx::deser(&mut raw_tx)?;
+                tx.outputs[out_idx].clone()
+            } else {
+                TxOutput {
+                    script: script_payload
+                        .reconstruct_script()
+                        .ok_or_else(|| CouldntReconstructScript(outpoint.clone()))?,
+                    value: db_utxo.value,
+                }
+            };
             let slp_output =
                 slp_reader
                     .slp_data_by_tx_num(db_utxo.outpoint.tx_num)?
@@ -96,7 +111,7 @@ impl<'a> Utxos<'a> {
                     hash: block.hash.clone(),
                     timestamp: block.timestamp,
                 }),
-                is_coinbase: tx.inputs[0].prev_out.is_coinbase(),
+                is_coinbase: block_tx.entry.is_coinbase,
                 output,
                 slp_output,
                 time_first_seen: block_tx.entry.time_first_seen,

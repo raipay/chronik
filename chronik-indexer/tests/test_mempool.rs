@@ -1032,7 +1032,10 @@ fn check_rich_utxos<const M: usize>(
         })
         .collect::<Result<Vec<_>>>()?;
     assert_eq!(
-        slp_indexer.utxos().utxos(prefix, payload)?,
+        slp_indexer.utxos().utxos(&ScriptPayload {
+            payload_prefix: prefix,
+            payload_data: payload.to_vec(),
+        })?,
         actual_outpoints,
     );
     Ok(())

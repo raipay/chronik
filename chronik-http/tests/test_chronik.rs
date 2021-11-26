@@ -12,7 +12,7 @@ use bitcoinsuite_test_utils::{bin_folder, is_free_tcp, pick_ports};
 use bitcoinsuite_test_utils_blockchain::build_tx;
 use chronik_http::{proto, ChronikServer, CONTENT_TYPE_PROTOBUF};
 use chronik_indexer::SlpIndexer;
-use chronik_rocksdb::{Db, IndexDb, IndexMemData, PayloadPrefix, ScriptTxsConf};
+use chronik_rocksdb::{Db, IndexDb, IndexMemData, PayloadPrefix, ScriptPayload, ScriptTxsConf};
 use futures::{SinkExt, StreamExt};
 use hyper::{header::CONTENT_TYPE, StatusCode};
 use pretty_assertions::assert_eq;
@@ -72,9 +72,10 @@ async fn test_server() -> Result<()> {
     while !slp_indexer.catchup_step()? {}
     slp_indexer.leave_catchup()?;
 
-    let mut utxos = slp_indexer
-        .utxos()
-        .utxos(PayloadPrefix::P2SH, anyone1_slice)?;
+    let mut utxos = slp_indexer.utxos().utxos(&ScriptPayload {
+        payload_prefix: PayloadPrefix::P2SH,
+        payload_data: anyone1_slice.to_vec(),
+    })?;
     assert_eq!(utxos.len(), 10);
 
     let anyone2_script = Script::from_slice(&[0x52]);
