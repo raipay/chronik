@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 
-use bitcoinsuite_core::{Script, UnhashedTx};
+use bitcoinsuite_core::{TxOutput, UnhashedTx};
 use bitcoinsuite_error::Result;
 use lru::LruCache;
 use rocksdb::{ColumnFamilyDescriptor, Direction, IteratorMode, Options, WriteBatch};
@@ -67,11 +67,11 @@ impl<'a> ScriptTxsWriter<'a> {
         batch: &mut WriteBatch,
         first_tx_num: TxNum,
         txs: &[UnhashedTx],
-        block_spent_script_fn: impl Fn(/*tx_idx:*/ usize, /*out_idx:*/ usize) -> &'b Script,
+        block_spent_output_fn: impl Fn(/*tx_idx:*/ usize, /*out_idx:*/ usize) -> &'b TxOutput,
         script_txs_cache: &mut ScriptTxsWriterCache,
     ) -> Result<Timings> {
         let timings = Timings::default();
-        let payload_tx_nums = prepare_tx_nums_by_payload(first_tx_num, txs, block_spent_script_fn);
+        let payload_tx_nums = prepare_tx_nums_by_payload(first_tx_num, txs, block_spent_output_fn);
         for (script_payload, tx_nums) in payload_tx_nums {
             let start_num_txs = script_txs_cache.get_num_txs_by_payload(
                 self.db,
@@ -97,10 +97,10 @@ impl<'a> ScriptTxsWriter<'a> {
         batch: &mut WriteBatch,
         first_tx_num: TxNum,
         txs: &[UnhashedTx],
-        block_spent_script_fn: impl Fn(/*tx_idx:*/ usize, /*out_idx:*/ usize) -> &'b Script,
+        block_spent_output_fn: impl Fn(/*tx_idx:*/ usize, /*out_idx:*/ usize) -> &'b TxOutput,
         script_txs_cache: &mut ScriptTxsWriterCache,
     ) -> Result<()> {
-        let payload_tx_nums = prepare_tx_nums_by_payload(first_tx_num, txs, block_spent_script_fn);
+        let payload_tx_nums = prepare_tx_nums_by_payload(first_tx_num, txs, block_spent_output_fn);
         for (script_payload, tx_nums) in payload_tx_nums {
             let start_num_txs = script_txs_cache.get_num_txs_by_payload(
                 self.db,
@@ -130,7 +130,7 @@ fn key_for_script_payload(script_payload: &[u8], page_num: u32) -> Vec<u8> {
 fn prepare_tx_nums_by_payload<'b>(
     first_tx_num: TxNum,
     txs: &[UnhashedTx],
-    block_spent_script_fn: impl Fn(/*tx_idx:*/ usize, /*out_idx:*/ usize) -> &'b Script,
+    block_spent_output_fn: impl Fn(/*tx_idx:*/ usize, /*out_idx:*/ usize) -> &'b TxOutput,
 ) -> HashMap<Vec<u8>, BTreeSet<TxNum>> {
     let mut payload_tx_nums = HashMap::<_, BTreeSet<TxNum>>::new();
     for (tx_idx, tx) in txs.iter().enumerate() {
@@ -148,8 +148,8 @@ fn prepare_tx_nums_by_payload<'b>(
         }
         let tx_pos = tx_idx - 1;
         for input_idx in 0..tx.inputs.len() {
-            let spent_script = block_spent_script_fn(tx_pos, input_idx);
-            for script_payload in script_payloads(spent_script) {
+            let spent_output = block_spent_output_fn(tx_pos, input_idx);
+            for script_payload in script_payloads(&spent_output.script) {
                 let script_payload = script_payload.payload.into_vec();
                 let tx_nums = payload_tx_nums.entry(script_payload).or_default();
                 tx_nums.insert(tx_num);
@@ -337,7 +337,7 @@ mod test {
         for &txs_block in txs_blocks {
             let mut block_txids = Vec::new();
             let mut txs = Vec::new();
-            let mut block_spent_scripts = Vec::new();
+            let mut block_spent_outputs = Vec::new();
             let first_tx_num = num_txs;
             for (inputs, output_scripts) in txs_block {
                 let txid = Sha256d::new([num_txs as u8; 32]);
@@ -364,7 +364,7 @@ mod test {
                         .collect(),
                     lock_time: 0,
                 });
-                let mut spent_scripts: Vec<&Script> = Vec::new();
+                let mut spent_outputs: Vec<TxOutput> = Vec::new();
                 for &(tx_num, out_idx) in inputs.iter() {
                     let output_scripts = txs_blocks
                         .iter()
@@ -373,12 +373,15 @@ mod test {
                         })
                         .nth(tx_num as usize)
                         .unwrap();
-                    spent_scripts.push(output_scripts[out_idx as usize]);
+                    spent_outputs.push(TxOutput {
+                        value: 0,
+                        script: output_scripts[out_idx as usize].clone(),
+                    });
                 }
-                block_spent_scripts.push(spent_scripts);
+                block_spent_outputs.push(spent_outputs);
             }
-            block_spent_scripts.remove(0);
-            blocks.push((first_tx_num, block_txids, txs, block_spent_scripts));
+            block_spent_outputs.remove(0);
+            blocks.push((first_tx_num, block_txids, txs, block_spent_outputs));
         }
         let connect_block = |block_height: usize, cache: &mut ScriptTxsWriterCache| -> Result<()> {
             let mut batch = WriteBatch::default();
@@ -386,7 +389,7 @@ mod test {
                 &mut batch,
                 blocks[block_height].0,
                 &blocks[block_height].2,
-                |tx_pos, input_idx| blocks[block_height].3[tx_pos][input_idx],
+                |tx_pos, input_idx| &blocks[block_height].3[tx_pos][input_idx],
                 cache,
             )?;
             db.write_batch(batch)?;
@@ -399,7 +402,7 @@ mod test {
                     &mut batch,
                     blocks[block_height].0,
                     &blocks[block_height].2,
-                    |tx_pos, input_idx| blocks[block_height].3[tx_pos][input_idx],
+                    |tx_pos, input_idx| &blocks[block_height].3[tx_pos][input_idx],
                     cache,
                 )?;
                 db.write_batch(batch)?;

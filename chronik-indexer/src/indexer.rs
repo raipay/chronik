@@ -308,9 +308,7 @@ impl SlpIndexer {
             &db_block_txs,
             &txs,
             |tx_pos, input_idx| {
-                &block.txs[tx_pos + 1].tx.spent_coins.as_ref().unwrap()[input_idx]
-                    .tx_output
-                    .script
+                &block.txs[tx_pos + 1].tx.spent_coins.as_ref().unwrap()[input_idx].tx_output
             },
             &mut self.data,
         )?;
@@ -336,9 +334,7 @@ impl SlpIndexer {
             txids_fn,
             &txs,
             |tx_pos, input_idx| {
-                &block.txs[tx_pos + 1].tx.spent_coins.as_ref().unwrap()[input_idx]
-                    .tx_output
-                    .script
+                &block.txs[tx_pos + 1].tx.spent_coins.as_ref().unwrap()[input_idx].tx_output
             },
             &mut self.data,
         )?;

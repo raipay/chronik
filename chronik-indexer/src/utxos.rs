@@ -56,11 +56,11 @@ impl<'a> Utxos<'a> {
         let mut utxos = Vec::new();
         for db_utxo in db_utxos {
             let block_tx = tx_reader
-                .by_tx_num(db_utxo.tx_num)?
-                .ok_or(InconsistentNoSuchTxNum(db_utxo.tx_num))?;
+                .by_tx_num(db_utxo.outpoint.tx_num)?
+                .ok_or(InconsistentNoSuchTxNum(db_utxo.outpoint.tx_num))?;
             let outpoint = OutPoint {
                 txid: block_tx.entry.txid.clone(),
-                out_idx: db_utxo.out_idx,
+                out_idx: db_utxo.outpoint.out_idx,
             };
             let out_idx = outpoint.out_idx as usize;
             if mempool_delta.deletes.contains(&outpoint) {
@@ -77,17 +77,18 @@ impl<'a> Utxos<'a> {
             let mut raw_tx = Bytes::from_bytes(raw_tx);
             let tx = UnhashedTx::deser(&mut raw_tx)?;
             let output = tx.outputs[out_idx].clone();
-            let slp_output = slp_reader
-                .slp_data_by_tx_num(db_utxo.tx_num)?
-                .map(|(slp_data, _)| {
-                    Box::new(SlpOutput {
-                        token_id: slp_data.token_id,
-                        tx_type: slp_data.slp_tx_type.tx_type_variant(),
-                        token_type: slp_data.slp_token_type,
-                        token: slp_data.output_tokens[out_idx],
-                        group_token_id: slp_data.group_token_id,
-                    })
-                });
+            let slp_output =
+                slp_reader
+                    .slp_data_by_tx_num(db_utxo.outpoint.tx_num)?
+                    .map(|(slp_data, _)| {
+                        Box::new(SlpOutput {
+                            token_id: slp_data.token_id,
+                            tx_type: slp_data.slp_tx_type.tx_type_variant(),
+                            token_type: slp_data.slp_token_type,
+                            token: slp_data.output_tokens[out_idx],
+                            group_token_id: slp_data.group_token_id,
+                        })
+                    });
             let rich_utxo = RichUtxo {
                 outpoint,
                 block: Some(RichTxBlock {

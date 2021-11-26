@@ -156,12 +156,12 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
         let tx_entry = slp_indexer
             .db()
             .txs()?
-            .by_tx_num(utxo_entry.tx_num)?
+            .by_tx_num(utxo_entry.outpoint.tx_num)?
             .unwrap();
         utxos.push((
             OutPoint {
                 txid: tx_entry.entry.txid,
-                out_idx: utxo_entry.out_idx,
+                out_idx: utxo_entry.outpoint.out_idx,
             },
             260_000_000,
         ));

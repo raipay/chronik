@@ -3,7 +3,7 @@ use std::{
     sync::{RwLock, RwLockReadGuard},
 };
 
-use bitcoinsuite_core::{Script, Sha256d, UnhashedTx};
+use bitcoinsuite_core::{Sha256d, TxOutput, UnhashedTx};
 use bitcoinsuite_error::{ErrorMeta, Result};
 use rocksdb::WriteBatch;
 use thiserror::Error;
@@ -93,7 +93,7 @@ impl IndexDb {
         block: &Block,
         block_txs: &'b BlockTxs,
         txs: &[UnhashedTx],
-        block_spent_script_fn: impl Fn(/*tx_idx:*/ usize, /*out_idx:*/ usize) -> &'b Script,
+        block_spent_output_fn: impl Fn(/*tx_idx:*/ usize, /*out_idx:*/ usize) -> &'b TxOutput,
         data: &mut IndexMemData,
     ) -> Result<()> {
         let mut timings = self.timings.write().unwrap();
@@ -124,7 +124,7 @@ impl IndexDb {
             &mut batch,
             first_tx_num,
             txs,
-            &block_spent_script_fn,
+            &block_spent_output_fn,
             &mut data.script_txs_cache,
         )?;
         timings.timings.stop_timer("outputs");
@@ -136,7 +136,7 @@ impl IndexDb {
             first_tx_num,
             &txids_fn,
             txs,
-            &block_spent_script_fn,
+            &block_spent_output_fn,
             &input_tx_nums,
         )?;
         timings.timings.stop_timer("utxos");
@@ -176,7 +176,7 @@ impl IndexDb {
         height: BlockHeight,
         txids_fn: impl Fn(usize) -> &'b Sha256d + Send + Sync,
         txs: &[UnhashedTx],
-        block_spent_script_fn: impl Fn(/*tx_idx:*/ usize, /*out_idx:*/ usize) -> &'b Script,
+        block_spent_output_fn: impl Fn(/*tx_idx:*/ usize, /*out_idx:*/ usize) -> &'b TxOutput,
         data: &mut IndexMemData,
     ) -> Result<()> {
         let block_writer = BlockWriter::new(&self.db)?;
@@ -200,7 +200,7 @@ impl IndexDb {
             &mut batch,
             first_tx_num,
             txs,
-            &block_spent_script_fn,
+            &block_spent_output_fn,
             &mut data.script_txs_cache,
         )?;
         utxo_writer.delete_block_txs(
@@ -208,7 +208,7 @@ impl IndexDb {
             first_tx_num,
             &txids_fn,
             txs,
-            block_spent_script_fn,
+            block_spent_output_fn,
         )?;
         spends_writer.delete_block_txs(&mut batch, first_tx_num, txs, &input_tx_nums)?;
         slp_writer.delete_block_txs(&mut batch, first_tx_num, txs, &txids_fn)?;

@@ -16,7 +16,7 @@ use bitcoinsuite_test_utils::bin_folder;
 use chronik_indexer::SlpIndexer;
 use chronik_rocksdb::{
     BlockTx, Db, IndexDb, IndexMemData, OutpointEntry, PayloadPrefix, ScriptTxsConf,
-    ScriptTxsReader, TxEntry, UtxosReader,
+    ScriptTxsReader, TxEntry, UtxoEntry, UtxosReader,
 };
 use pretty_assertions::assert_eq;
 use tempdir::TempDir;
@@ -129,12 +129,13 @@ fn test_index_genesis(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
     )?;
     let r = &slp_indexer.db().script_txs()?;
     let db_utxos = &slp_indexer.db().utxos()?;
+    let genesis_value = 130_000_000;
     check_pages(r, PayloadPrefix::P2PKLegacy, &genesis_payload, [&[0]])?;
     check_utxos(
         db_utxos,
         PayloadPrefix::P2PKLegacy,
         &genesis_payload,
-        [(0, 1)],
+        [(0, 1, genesis_value)],
     )?;
     assert_eq!(
         slp_indexer.blocks().block_txs_by_hash(&block.hash)?,
@@ -160,7 +161,7 @@ fn test_index_genesis(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
             }),
             is_coinbase: true,
             output: TxOutput {
-                value: 130_000_000,
+                value: genesis_value,
                 script: Script::from_ops(
                     [
                         Op::Push(genesis_payload.len() as u8, genesis_payload.into()),
@@ -204,7 +205,12 @@ fn test_get_out_of_ibd(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> R
     let r = &slp_indexer.db().script_txs()?;
     let db_utxos = &slp_indexer.db().utxos()?;
     check_pages(r, PayloadPrefix::P2SH, &[0; 20], [&[1]])?;
-    check_utxos(db_utxos, PayloadPrefix::P2SH, &[0; 20], [(1, 1)])?;
+    check_utxos(
+        db_utxos,
+        PayloadPrefix::P2SH,
+        &[0; 20],
+        [(1, 1, 260_000_000)],
+    )?;
     let rich_coinbase_tx = slp_indexer.txs().rich_tx_by_txid(&coinbase_txid)?.unwrap();
     assert_eq!(
         slp_indexer.blocks().block_txs_by_hash(&tip.hash)?,
@@ -259,7 +265,7 @@ fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Resu
         &slp_indexer.db().utxos()?,
         PayloadPrefix::P2SH,
         &[0; 20],
-        [(1, 1)],
+        [(1, 1, 260_000_000)],
     )?;
     let block1 = build_lotus_block(
         tip.prev_hash.clone(),
@@ -345,7 +351,7 @@ fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Resu
         &slp_indexer.db().utxos()?,
         PayloadPrefix::P2SH,
         anyone_payload,
-        [(1, 1)],
+        [(1, 1, 260_000_000)],
     )?;
     assert_eq!(
         slp_indexer.blocks().block_txs_by_hash(&block1_tip.hash)?,
@@ -369,7 +375,7 @@ fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Resu
         &slp_indexer.db().utxos()?,
         PayloadPrefix::P2SH,
         anyone_payload,
-        [(1, 1), (2, 1)],
+        [(1, 1, 260_000_000), (2, 1, 260_000_000)],
     )?;
     assert_eq!(
         slp_indexer.blocks().block_txs_by_hash(&block2_tip.hash)?,
@@ -402,13 +408,17 @@ fn check_utxos<const N: usize>(
     utxo_reader: &UtxosReader,
     prefix: PayloadPrefix,
     payload_body: &[u8],
-    expected_txs: [(u64, u32); N],
+    expected_txs: [(u64, u32, i64); N],
 ) -> Result<()> {
     assert_eq!(
         utxo_reader.utxos(prefix, payload_body)?,
         expected_txs
             .into_iter()
-            .map(|(tx_num, out_idx)| OutpointEntry { tx_num, out_idx })
+            .map(|(tx_num, out_idx, value)| UtxoEntry {
+                outpoint: OutpointEntry { tx_num, out_idx },
+                value,
+                is_partial_script: false,
+            })
             .collect::<Vec<_>>(),
     );
     Ok(())
