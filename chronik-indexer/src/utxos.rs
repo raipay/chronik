@@ -2,6 +2,7 @@ use bitcoinsuite_core::{BitcoinCode, Bytes, OutPoint, Sha256d, TxOutput, Unhashe
 use bitcoinsuite_error::{ErrorMeta, Result};
 use bitcoinsuite_slp::{RichTxBlock, RichUtxo, SlpOutput};
 use chronik_rocksdb::{BlockHeight, ScriptPayload, TxNum, UtxoDelta};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use thiserror::Error;
 
 use crate::SlpIndexer;
@@ -59,66 +60,69 @@ impl<'a> Utxos<'a> {
             .db_mempool()
             .utxos(prefix, payload)
             .unwrap_or(&default_utxo_delta);
-        let mut utxos = Vec::new();
-        for db_utxo in db_utxos {
-            let block_tx = tx_reader
-                .by_tx_num(db_utxo.outpoint.tx_num)?
-                .ok_or(InconsistentNoSuchTxNum(db_utxo.outpoint.tx_num))?;
-            let outpoint = OutPoint {
-                txid: block_tx.entry.txid.clone(),
-                out_idx: db_utxo.outpoint.out_idx,
-            };
-            let out_idx = outpoint.out_idx as usize;
-            if mempool_delta.deletes.contains(&outpoint) {
-                continue;
-            }
-            let block = block_reader
-                .by_height(block_tx.block_height)?
-                .expect("Inconsistent db");
-            let output = if db_utxo.is_partial_script {
-                let raw_tx = self.indexer.rpc_interface.get_block_slice(
-                    block.file_num,
-                    block_tx.entry.data_pos,
-                    block_tx.entry.tx_size,
-                )?;
-                let mut raw_tx = Bytes::from_bytes(raw_tx);
-                let tx = UnhashedTx::deser(&mut raw_tx)?;
-                tx.outputs[out_idx].clone()
-            } else {
-                TxOutput {
-                    script: script_payload
-                        .reconstruct_script()
-                        .ok_or_else(|| CouldntReconstructScript(outpoint.clone()))?,
-                    value: db_utxo.value,
+        let mut utxos = db_utxos
+            .into_par_iter()
+            .map(|db_utxo| -> Result<Option<_>> {
+                let block_tx = tx_reader
+                    .by_tx_num(db_utxo.outpoint.tx_num)?
+                    .ok_or(InconsistentNoSuchTxNum(db_utxo.outpoint.tx_num))?;
+                let outpoint = OutPoint {
+                    txid: block_tx.entry.txid.clone(),
+                    out_idx: db_utxo.outpoint.out_idx,
+                };
+                let out_idx = outpoint.out_idx as usize;
+                if mempool_delta.deletes.contains(&outpoint) {
+                    return Ok(None);
                 }
-            };
-            let slp_output =
-                slp_reader
-                    .slp_data_by_tx_num(db_utxo.outpoint.tx_num)?
-                    .map(|(slp_data, _)| {
-                        Box::new(SlpOutput {
-                            token_id: slp_data.token_id,
-                            tx_type: slp_data.slp_tx_type.tx_type_variant(),
-                            token_type: slp_data.slp_token_type,
-                            token: slp_data.output_tokens[out_idx],
-                            group_token_id: slp_data.group_token_id,
-                        })
-                    });
-            let rich_utxo = RichUtxo {
-                outpoint,
-                block: Some(RichTxBlock {
-                    height: block_tx.block_height,
-                    hash: block.hash.clone(),
-                    timestamp: block.timestamp,
-                }),
-                is_coinbase: block_tx.entry.is_coinbase,
-                output,
-                slp_output,
-                time_first_seen: block_tx.entry.time_first_seen,
-                network: self.indexer.network,
-            };
-            utxos.push(rich_utxo);
-        }
+                let block = block_reader
+                    .by_height(block_tx.block_height)?
+                    .expect("Inconsistent db");
+                let output = if db_utxo.is_partial_script {
+                    let raw_tx = self.indexer.rpc_interface.get_block_slice(
+                        block.file_num,
+                        block_tx.entry.data_pos,
+                        block_tx.entry.tx_size,
+                    )?;
+                    let mut raw_tx = Bytes::from_bytes(raw_tx);
+                    let tx = UnhashedTx::deser(&mut raw_tx)?;
+                    tx.outputs[out_idx].clone()
+                } else {
+                    TxOutput {
+                        script: script_payload
+                            .reconstruct_script()
+                            .ok_or_else(|| CouldntReconstructScript(outpoint.clone()))?,
+                        value: db_utxo.value,
+                    }
+                };
+                let slp_output =
+                    slp_reader
+                        .slp_data_by_tx_num(db_utxo.outpoint.tx_num)?
+                        .map(|(slp_data, _)| {
+                            Box::new(SlpOutput {
+                                token_id: slp_data.token_id,
+                                tx_type: slp_data.slp_tx_type.tx_type_variant(),
+                                token_type: slp_data.slp_token_type,
+                                token: slp_data.output_tokens[out_idx],
+                                group_token_id: slp_data.group_token_id,
+                            })
+                        });
+                let rich_utxo = RichUtxo {
+                    outpoint,
+                    block: Some(RichTxBlock {
+                        height: block_tx.block_height,
+                        hash: block.hash.clone(),
+                        timestamp: block.timestamp,
+                    }),
+                    is_coinbase: block_tx.entry.is_coinbase,
+                    output,
+                    slp_output,
+                    time_first_seen: block_tx.entry.time_first_seen,
+                    network: self.indexer.network,
+                };
+                Ok(Some(rich_utxo))
+            })
+            .filter_map(|result| result.transpose())
+            .collect::<Result<Vec<_>>>()?;
         for outpoint in mempool_delta.inserts.iter().cloned() {
             let out_idx = outpoint.out_idx as usize;
             let entry = self

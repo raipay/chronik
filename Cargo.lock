@@ -432,6 +432,7 @@ dependencies = [
  "chronik-rocksdb",
  "hex",
  "pretty_assertions",
+ "rayon",
  "tempdir",
  "thiserror",
  "tokio",

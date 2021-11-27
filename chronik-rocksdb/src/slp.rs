@@ -36,10 +36,6 @@ pub struct SlpWriter<'a> {
 
 pub struct SlpReader<'a> {
     db: &'a Db,
-    cf_slp_token_metadata: &'a CF,
-    cf_slp_token_num_by_id: &'a CF,
-    cf_slp_tx_data: &'a CF,
-    cf_slp_tx_invalid_message: &'a CF,
 }
 
 #[derive(Debug, Error, ErrorMeta)]
@@ -549,24 +545,18 @@ impl<'a> SlpWriter<'a> {
 
 impl<'a> SlpReader<'a> {
     pub fn new(db: &'a Db) -> Result<Self> {
-        let cf_slp_token_metadata = db.cf(CF_SLP_TOKEN_METADATA)?;
-        let cf_slp_token_num_by_id = db.cf(CF_SLP_TOKEN_NUM_BY_ID)?;
-        let cf_slp_tx_data = db.cf(CF_SLP_TX_DATA)?;
-        let cf_slp_tx_invalid_message = db.cf(CF_SLP_TX_INVALID_MESSAGE)?;
-        Ok(SlpReader {
-            db,
-            cf_slp_token_metadata,
-            cf_slp_token_num_by_id,
-            cf_slp_tx_data,
-            cf_slp_tx_invalid_message,
-        })
+        let _ = db.cf(CF_SLP_TOKEN_METADATA)?;
+        let _ = db.cf(CF_SLP_TOKEN_NUM_BY_ID)?;
+        let _ = db.cf(CF_SLP_TX_DATA)?;
+        let _ = db.cf(CF_SLP_TX_INVALID_MESSAGE)?;
+        Ok(SlpReader { db })
     }
 
     pub fn token_by_token_num(&self, token_num: TokenNum) -> Result<Option<SlpGenesisInfo>> {
         let token_num = TokenNumZC::new(token_num);
         match self
             .db
-            .get(self.cf_slp_token_metadata, token_num.as_bytes())?
+            .get(self.cf_slp_token_metadata(), token_num.as_bytes())?
         {
             Some(slp_genesis_info) => Ok(Some(bincode::deserialize(&slp_genesis_info)?)),
             None => Ok(None),
@@ -575,7 +565,7 @@ impl<'a> SlpReader<'a> {
 
     pub fn token_num_by_id(&self, token_id: &TokenId) -> Result<Option<TokenNum>> {
         let token_id_be = token_id.token_id_be();
-        let token_num = match self.db.get(self.cf_slp_token_num_by_id, token_id_be)? {
+        let token_num = match self.db.get(self.cf_slp_token_num_by_id(), token_id_be)? {
             Some(token_num) => token_num,
             None => return Ok(None),
         };
@@ -589,7 +579,7 @@ impl<'a> SlpReader<'a> {
         tx_num: TxNum,
     ) -> Result<Option<(SlpTxData, Vec<Option<Box<SlpBurn>>>)>> {
         let tx_num = TxNumZC::new(tx_num);
-        let slp_tx_data = match self.db.get(self.cf_slp_tx_data, tx_num.as_bytes())? {
+        let slp_tx_data = match self.db.get(self.cf_slp_tx_data(), tx_num.as_bytes())? {
             Some(slp_tx_data) => bincode::deserialize::<SerSlpTxEntry>(&slp_tx_data)?,
             None => return Ok(None),
         };
@@ -657,11 +647,27 @@ impl<'a> SlpReader<'a> {
         let tx_num = TxNumZC::new(tx_num);
         match self
             .db
-            .get(self.cf_slp_tx_invalid_message, tx_num.as_bytes())?
+            .get(self.cf_slp_tx_invalid_message(), tx_num.as_bytes())?
         {
             Some(message) => Ok(Some(std::str::from_utf8(&message)?.to_string())),
             None => Ok(None),
         }
+    }
+
+    fn cf_slp_token_num_by_id(&self) -> &CF {
+        self.db.cf(CF_SLP_TOKEN_NUM_BY_ID).unwrap()
+    }
+
+    fn cf_slp_token_metadata(&self) -> &CF {
+        self.db.cf(CF_SLP_TOKEN_METADATA).unwrap()
+    }
+
+    fn cf_slp_tx_data(&self) -> &CF {
+        self.db.cf(CF_SLP_TX_DATA).unwrap()
+    }
+
+    fn cf_slp_tx_invalid_message(&self) -> &CF {
+        self.db.cf(CF_SLP_TX_INVALID_MESSAGE).unwrap()
     }
 }
 

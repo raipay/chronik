@@ -18,6 +18,9 @@ tokio = { version = "1.14", features = ["full"] }
 
 hex = "0.4"
 
+# For parallelizing tx processing
+rayon = "1.5"
+
 # Error handling
 thiserror = "1.0"
 bitcoinsuite-error = { path = "../../bitcoinsuite/bitcoinsuite-error" }

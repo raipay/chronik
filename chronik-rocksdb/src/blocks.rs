@@ -32,7 +32,6 @@ pub struct BlockWriter<'a> {
 
 pub struct BlockReader<'a> {
     db: &'a Db,
-    cf: &'a CF,
     index: Index<BlockIndexable>,
 }
 
@@ -134,14 +133,14 @@ impl<'a> BlockWriter<'a> {
 
 impl<'a> BlockReader<'a> {
     pub fn new(db: &'a Db) -> Result<Self> {
-        let cf = db.cf(CF_BLOCKS)?;
+        let _ = db.cf(CF_BLOCKS)?;
         let index = block_index();
-        Ok(BlockReader { db, cf, index })
+        Ok(BlockReader { db, index })
     }
 
     /// The height of the most-work fully-validated chain. The genesis block has height 0
     pub fn height(&self) -> Result<BlockHeight> {
-        let mut iter = self.db.rocks().iterator_cf(self.cf, IteratorMode::End);
+        let mut iter = self.db.rocks().iterator_cf(self.cf(), IteratorMode::End);
         match iter.next() {
             Some((height_bytes, _)) => Ok(interpret::<BlockHeightZC>(&height_bytes)?.get()),
             None => Ok(-1),
@@ -149,7 +148,7 @@ impl<'a> BlockReader<'a> {
     }
 
     pub fn tip(&self) -> Result<Option<Block>> {
-        let mut iter = self.db.rocks().iterator_cf(self.cf, IteratorMode::End);
+        let mut iter = self.db.rocks().iterator_cf(self.cf(), IteratorMode::End);
         match iter.next() {
             Some((height_bytes, block_data)) => {
                 let height = interpret::<BlockHeightZC>(&height_bytes)?.get();
@@ -172,7 +171,7 @@ impl<'a> BlockReader<'a> {
     pub fn by_height(&self, height: BlockHeight) -> Result<Option<Block>> {
         let block_data = self
             .db
-            .get(self.cf, BlockHeightZC::new(height).as_bytes())?;
+            .get(self.cf(), BlockHeightZC::new(height).as_bytes())?;
         let block_data = match &block_data {
             Some(block_data) => interpret::<BlockData>(block_data)?,
             None => return Ok(None),
@@ -216,10 +215,14 @@ impl<'a> BlockReader<'a> {
         }
         let prev_block_data = self
             .db
-            .get(self.cf, BlockHeightZC::new(height - 1).as_bytes())?
+            .get(self.cf(), BlockHeightZC::new(height - 1).as_bytes())?
             .ok_or(OrphanBlock(height))?;
         let prev_block = interpret::<BlockData>(&prev_block_data)?;
         Ok(prev_block.hash)
+    }
+
+    fn cf(&self) -> &CF {
+        self.db.cf(CF_BLOCKS).unwrap()
     }
 }
 
