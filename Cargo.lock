@@ -405,6 +405,7 @@ dependencies = [
  "futures",
  "hex",
  "hyper",
+ "itertools",
  "pretty_assertions",
  "prost",
  "reqwest",

@@ -14,6 +14,7 @@ use bitcoinsuite_slp::{SlpTokenType, SlpTxTypeVariant};
 use chronik_indexer::{subscribers::SubscribeMessage, SlpIndexer, UtxoStateVariant};
 use chronik_rocksdb::ScriptPayload;
 use futures::future::select_all;
+use itertools::Itertools;
 use prost::Message;
 use thiserror::Error;
 use tokio::sync::{broadcast, RwLock};
@@ -148,53 +149,60 @@ async fn handle_script_utxos(
     })?;
     let prefix = parse_payload_prefix(script_type, payload.len())?;
     let slp_indexer = server.slp_indexer.read().await;
-    let utxos = slp_indexer.utxos().utxos(&ScriptPayload {
+    let mut utxos = slp_indexer.utxos().utxos(&ScriptPayload {
         payload_prefix: prefix,
         payload_data: payload,
     })?;
-    let utxos = utxos
+    utxos.sort_by_key(|utxo| utxo.output.script.bytecode().clone());
+
+    let groups = Itertools::group_by(utxos.into_iter(), |utxo| {
+        utxo.output.script.bytecode().clone()
+    });
+    let script_utxos = groups
         .into_iter()
-        .map(|utxo| proto::Utxo {
-            outpoint: Some(proto::OutPoint {
-                txid: utxo.outpoint.txid.as_slice().to_vec(),
-                out_idx: utxo.outpoint.out_idx,
-            }),
-            block: utxo.block.map(|block| proto::BlockMetadata {
-                height: block.height,
-                hash: block.hash.as_slice().to_vec(),
-                timestamp: block.timestamp,
-            }),
-            is_coinbase: utxo.is_coinbase,
-            output_script: utxo.output.script.bytecode().to_vec(),
-            value: utxo.output.value,
-            slp_token: utxo
-                .slp_output
-                .as_ref()
-                .and_then(|slp_output| slp_token_to_proto(slp_output.token)),
-            slp_meta: utxo.slp_output.map(|slp_output| proto::SlpMeta {
-                token_type: match slp_output.token_type {
-                    SlpTokenType::Fungible => proto::SlpTokenType::Fungible as i32,
-                    SlpTokenType::Nft1Group => proto::SlpTokenType::Nft1Group as i32,
-                    SlpTokenType::Nft1Child => proto::SlpTokenType::Nft1Child as i32,
-                    SlpTokenType::Unknown => proto::SlpTokenType::UnknownTokenType as i32,
-                },
-                tx_type: match &slp_output.tx_type {
-                    SlpTxTypeVariant::Genesis => proto::SlpTxType::Genesis as i32,
-                    SlpTxTypeVariant::Send => proto::SlpTxType::Send as i32,
-                    SlpTxTypeVariant::Mint => proto::SlpTxType::Mint as i32,
-                    SlpTxTypeVariant::Unknown => proto::SlpTxType::UnknownTxType as i32,
-                },
-                token_id: slp_output.token_id.as_slice_be().to_vec(),
-                group_token_id: slp_output
-                    .group_token_id
-                    .map(|token_id| token_id.as_slice_be().to_vec())
-                    .unwrap_or_default(),
-            }),
-            time_first_seen: utxo.time_first_seen,
-            network: network_to_proto(utxo.network) as i32,
+        .map(|(output_script, utxos)| {
+            let utxos = utxos
+                .map(|utxo| proto::Utxo {
+                    outpoint: Some(proto::OutPoint {
+                        txid: utxo.outpoint.txid.as_slice().to_vec(),
+                        out_idx: utxo.outpoint.out_idx,
+                    }),
+                    block_height: utxo.block.map(|block| block.height).unwrap_or(-1),
+                    is_coinbase: utxo.is_coinbase,
+                    value: utxo.output.value,
+                    slp_token: utxo
+                        .slp_output
+                        .as_ref()
+                        .and_then(|slp_output| slp_token_to_proto(slp_output.token)),
+                    slp_meta: utxo.slp_output.map(|slp_output| proto::SlpMeta {
+                        token_type: match slp_output.token_type {
+                            SlpTokenType::Fungible => proto::SlpTokenType::Fungible as i32,
+                            SlpTokenType::Nft1Group => proto::SlpTokenType::Nft1Group as i32,
+                            SlpTokenType::Nft1Child => proto::SlpTokenType::Nft1Child as i32,
+                            SlpTokenType::Unknown => proto::SlpTokenType::UnknownTokenType as i32,
+                        },
+                        tx_type: match &slp_output.tx_type {
+                            SlpTxTypeVariant::Genesis => proto::SlpTxType::Genesis as i32,
+                            SlpTxTypeVariant::Send => proto::SlpTxType::Send as i32,
+                            SlpTxTypeVariant::Mint => proto::SlpTxType::Mint as i32,
+                            SlpTxTypeVariant::Unknown => proto::SlpTxType::UnknownTxType as i32,
+                        },
+                        token_id: slp_output.token_id.as_slice_be().to_vec(),
+                        group_token_id: slp_output
+                            .group_token_id
+                            .map(|token_id| token_id.as_slice_be().to_vec())
+                            .unwrap_or_default(),
+                    }),
+                    network: network_to_proto(utxo.network) as i32,
+                })
+                .collect();
+            proto::ScriptUtxos {
+                output_script: output_script.to_vec(),
+                utxos,
+            }
         })
-        .collect::<Vec<_>>();
-    Ok(Protobuf(proto::Utxos { utxos }))
+        .collect();
+    Ok(Protobuf(proto::Utxos { script_utxos }))
 }
 
 async fn handle_validate_utxos(

@@ -25,14 +25,17 @@ message Tx {
 
 message Utxo {
     OutPoint outpoint = 1;
-    BlockMetadata block = 2;
+    int32 block_height = 2;
     bool is_coinbase = 3;
-    bytes output_script = 4;
     int64 value = 5;
     SlpMeta slp_meta = 6;
     SlpToken slp_token = 7;
-    int64 time_first_seen = 8;
     Network network = 9;
+}
+
+message ScriptUtxos {
+    bytes output_script = 1;
+    repeated Utxo utxos = 2;
 }
 
 message TxHistoryPage {
@@ -41,7 +44,7 @@ message TxHistoryPage {
 }
 
 message Utxos {
-    repeated Utxo utxos = 1;
+    repeated ScriptUtxos script_utxos = 1;
 }
 
 message SlpTxData {

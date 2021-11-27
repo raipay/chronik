@@ -283,20 +283,21 @@ async fn test_server() -> Result<()> {
     assert_eq!(
         proto_utxos,
         proto::Utxos {
-            utxos: vec![proto::Utxo {
-                outpoint: Some(proto::OutPoint {
-                    txid: txid.as_slice().to_vec(),
-                    out_idx: 1,
-                }),
-                block: None,
-                is_coinbase: false,
+            script_utxos: vec![proto::ScriptUtxos {
                 output_script: anyone2_address.to_script().bytecode().to_vec(),
-                value: leftover_value,
-                slp_meta: None,
-                slp_token: None,
-                time_first_seen: 2_100_000_000,
-                network: proto::Network::Xpi as i32,
-            }]
+                utxos: vec![proto::Utxo {
+                    outpoint: Some(proto::OutPoint {
+                        txid: txid.as_slice().to_vec(),
+                        out_idx: 1,
+                    }),
+                    block_height: -1,
+                    is_coinbase: false,
+                    value: leftover_value,
+                    slp_meta: None,
+                    slp_token: None,
+                    network: proto::Network::Xpi as i32,
+                }],
+            }],
         }
     );
 
