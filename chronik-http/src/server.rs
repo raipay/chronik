@@ -17,6 +17,7 @@ use futures::future::select_all;
 use prost::Message;
 use thiserror::Error;
 use tokio::sync::{broadcast, RwLock};
+use tower_http::compression::CompressionLayer;
 
 pub const DEFAULT_PAGE_SIZE: usize = 25;
 pub const MAX_PAGE_SIZE: usize = 200;
@@ -68,7 +69,8 @@ impl ChronikServer {
             )
             .route("/validate-utxos", routing::post(handle_validate_utxos))
             .route("/ws", routing::get(handle_subscribe))
-            .layer(AddExtensionLayer::new(self));
+            .layer(AddExtensionLayer::new(self))
+            .layer(CompressionLayer::new());
 
         axum::Server::bind(&addr)
             .serve(app.into_make_service())

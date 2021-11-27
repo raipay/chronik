@@ -415,6 +415,7 @@ dependencies = [
  "tokio-tungstenite 0.16.1",
  "tonic",
  "tonic-build",
+ "tower-http",
 ]
 
 [[package]]
@@ -2398,6 +2399,8 @@ dependencies = [
  "http",
  "http-body",
  "pin-project",
+ "tokio",
+ "tokio-util 0.6.9",
  "tower-layer",
  "tower-service",
 ]
