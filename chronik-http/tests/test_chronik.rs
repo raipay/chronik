@@ -167,7 +167,7 @@ async fn test_server() -> Result<()> {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()[CONTENT_TYPE], CONTENT_TYPE_PROTOBUF);
     let proto_tx = proto::Tx::decode(response.bytes().await?)?;
-    let expected_tx = proto::Tx {
+    let mut expected_tx = proto::Tx {
         txid: txid.as_slice().to_vec(),
         version: tx.version,
         inputs: vec![proto::TxInput {
@@ -267,7 +267,7 @@ async fn test_server() -> Result<()> {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()[CONTENT_TYPE], CONTENT_TYPE_PROTOBUF);
     let proto_page = proto::TxHistoryPage::decode(response.bytes().await?)?;
-    assert_eq!(proto_page.txs, vec![expected_tx]);
+    assert_eq!(proto_page.txs, vec![expected_tx.clone()]);
 
     let response = client
         .get(format!(
@@ -434,24 +434,42 @@ async fn test_server() -> Result<()> {
             prev_hash = cur_hash;
         }
         let cur_hash = Sha256d::from_hex_be(&bitcoind.cmd_string("getblockhash", &["111"])?)?;
+        let block_info = proto::BlockInfo {
+            hash: cur_hash.as_slice().to_vec(),
+            prev_hash: prev_hash.as_slice().to_vec(),
+            height: 111,
+            n_bits: 0x207fffff,
+            timestamp: 2100000020,
+            block_size: 391,
+            num_txs: 2,
+            num_inputs: 2,
+            num_outputs: 4,
+            sum_input_sats: 260_000_000,
+            sum_coinbase_output_sats: 260_005_000,
+            sum_normal_output_sats: 259990000,
+            sum_burned_sats: 0,
+        };
+        assert_eq!(proto_blocks.blocks[111], block_info);
+
+        let response = client
+            .get(format!("{}/block/{}", url, cur_hash))
+            .send()
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[CONTENT_TYPE], CONTENT_TYPE_PROTOBUF);
+        let proto_block = proto::Block::decode(response.bytes().await?)?;
+        expected_tx.block = Some(proto::BlockMetadata {
+            height: 111,
+            hash: cur_hash.as_slice().to_vec(),
+            timestamp: 2100000020,
+        });
         assert_eq!(
-            proto_blocks.blocks[111],
-            proto::BlockInfo {
-                hash: cur_hash.as_slice().to_vec(),
-                prev_hash: prev_hash.as_slice().to_vec(),
-                height: 111,
-                n_bits: 0x207fffff,
-                timestamp: 2100000020,
-                block_size: 391,
-                num_txs: 2,
-                num_inputs: 2,
-                num_outputs: 4,
-                sum_input_sats: 260_000_000,
-                sum_coinbase_output_sats: 260_005_000,
-                sum_normal_output_sats: 259990000,
-                sum_burned_sats: 0,
+            proto_block,
+            proto::Block {
+                block_info: Some(block_info),
+                txs: vec![proto_block.txs[0].clone(), expected_tx],
             }
-        );
+        )
     }
 
     let response = client.get(format!("{}/blocks/10/20", url)).send().await?;

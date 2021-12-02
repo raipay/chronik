@@ -57,6 +57,11 @@ message BlockInfo {
     int64 sum_burned_sats = 13;
 }
 
+message Block {
+    BlockInfo block_info = 1;
+    repeated Tx txs = 2;
+}
+
 message ScriptUtxos {
     bytes output_script = 1;
     repeated Utxo utxos = 2;

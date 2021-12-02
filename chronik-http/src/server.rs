@@ -38,6 +38,14 @@ pub enum ChronikServerError {
     #[error("Txid not found: {0}")]
     TxNotFound(Sha256d),
 
+    #[not_found()]
+    #[error("Block not found: {0}")]
+    BlockNotFound(String),
+
+    #[invalid_user_input()]
+    #[error("Invalid hash or height: {0}")]
+    InvalidHashOrHeight(String),
+
     #[invalid_user_input()]
     #[error("Invalid {name}: {value}")]
     InvalidField { name: &'static str, value: String },
@@ -52,7 +60,10 @@ pub enum ChronikServerError {
 }
 
 use crate::{
-    convert::{network_to_proto, parse_payload_prefix, rich_tx_to_proto, slp_token_to_proto},
+    convert::{
+        block_to_info_proto, network_to_proto, parse_payload_prefix, rich_tx_to_proto,
+        slp_token_to_proto,
+    },
     error::{report_to_status_proto, ReportError},
     proto,
     protobuf::Protobuf,
@@ -65,6 +76,7 @@ impl ChronikServer {
         let addr = self.addr;
         let app = Router::new()
             .route("/blocks/:start/:end", routing::get(handle_blocks))
+            .route("/block/:hash_or_height", routing::get(handle_block))
             .route("/tx/:txid", routing::get(handle_tx))
             .route(
                 "/script/:type/:payload/history",
@@ -120,23 +132,37 @@ async fn handle_blocks(
             Some(tuple) => tuple,
             None => break,
         };
-        blocks.push(proto::BlockInfo {
-            hash: block.hash.as_slice().to_vec(),
-            prev_hash: block.prev_hash.as_slice().to_vec(),
-            height: block.height,
-            n_bits: block.n_bits,
-            timestamp: block.timestamp,
-            block_size: block_stats.block_size,
-            num_txs: block_stats.num_txs,
-            num_inputs: block_stats.num_inputs,
-            num_outputs: block_stats.num_outputs,
-            sum_input_sats: block_stats.sum_input_sats,
-            sum_coinbase_output_sats: block_stats.sum_coinbase_output_sats,
-            sum_normal_output_sats: block_stats.sum_normal_output_sats,
-            sum_burned_sats: block_stats.sum_burned_sats,
-        });
+        blocks.push(block_to_info_proto(&block, &block_stats));
     }
     Ok(Protobuf(proto::Blocks { blocks }))
+}
+
+async fn handle_block(
+    Path(hash_or_height): Path<String>,
+    Extension(server): Extension<ChronikServer>,
+) -> Result<Protobuf<proto::Block>, ReportError> {
+    let slp_indexer = server.slp_indexer.read().await;
+    let block_reader = slp_indexer.db().blocks()?;
+    let block_stats_reader = slp_indexer.db().block_stats()?;
+    let block = match hash_or_height.parse::<i32>() {
+        Ok(height) => block_reader.by_height(height)?,
+        Err(_) => {
+            let hash = Sha256d::from_hex_be(&hash_or_height)
+                .map_err(|_| InvalidHashOrHeight(hash_or_height.clone()))?;
+            block_reader.by_hash(&hash)?
+        }
+    };
+    let block = match block {
+        Some(block) => block,
+        None => return Err(BlockNotFound(hash_or_height).into()),
+    };
+    let block_stats = block_stats_reader
+        .by_height(block.height)?
+        .expect("Inconsistent index");
+    let block_info = Some(block_to_info_proto(&block, &block_stats));
+    let txs = slp_indexer.blocks().block_txs_by_height(block.height)?;
+    let txs = txs.into_iter().map(rich_tx_to_proto).collect();
+    Ok(Protobuf(proto::Block { txs, block_info }))
 }
 
 async fn handle_tx(

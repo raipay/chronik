@@ -3,7 +3,7 @@ use bitcoinsuite_slp::{RichTx, SlpToken, SlpTokenType, SlpTxType};
 
 use bitcoinsuite_error::{ErrorMeta, Report};
 
-use chronik_rocksdb::PayloadPrefix;
+use chronik_rocksdb::{Block, BlockStats, PayloadPrefix};
 use thiserror::Error;
 
 use crate::proto;
@@ -20,6 +20,24 @@ pub enum ChronikConvertError {
 }
 
 use self::ChronikConvertError::*;
+
+pub fn block_to_info_proto(block: &Block, block_stats: &BlockStats) -> proto::BlockInfo {
+    proto::BlockInfo {
+        hash: block.hash.as_slice().to_vec(),
+        prev_hash: block.prev_hash.as_slice().to_vec(),
+        height: block.height,
+        n_bits: block.n_bits,
+        timestamp: block.timestamp,
+        block_size: block_stats.block_size,
+        num_txs: block_stats.num_txs,
+        num_inputs: block_stats.num_inputs,
+        num_outputs: block_stats.num_outputs,
+        sum_input_sats: block_stats.sum_input_sats,
+        sum_coinbase_output_sats: block_stats.sum_coinbase_output_sats,
+        sum_normal_output_sats: block_stats.sum_normal_output_sats,
+        sum_burned_sats: block_stats.sum_burned_sats,
+    }
+}
 
 pub fn rich_tx_to_proto(rich_tx: RichTx) -> proto::Tx {
     proto::Tx {

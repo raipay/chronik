@@ -3,6 +3,7 @@ use bitcoinsuite_core::{BitcoinCode, BitcoinHeader, LotusHeader, Network, Sha256
 use bitcoinsuite_error::{ErrorMeta, Result};
 use bitcoinsuite_slp::RichTx;
 use chronik_rocksdb::{Block, BlockHeight, BlockReader};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use thiserror::Error;
 
 use crate::SlpIndexer;
@@ -76,7 +77,7 @@ impl<'a> Blocks<'a> {
             .ok_or_else(|| InconsistentNoSuchBlock(nng_block.header.hash.clone()))?;
         nng_block
             .txs
-            .into_iter()
+            .into_par_iter()
             .map(|nng_block_tx| {
                 let (tx_num, block_tx) = db_txs
                     .tx_and_num_by_txid(&nng_block_tx.tx.txid)?
