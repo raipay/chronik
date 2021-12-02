@@ -1,6 +1,7 @@
 [workspace]
 
 members = [
+    "chronik-exe",
     "chronik-http",
     "chronik-indexer",
     "chronik-rocksdb",

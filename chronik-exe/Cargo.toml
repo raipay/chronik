@@ -1,0 +1,25 @@
+[package]
+name = "chronik-exe"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Error handling
+thiserror = "1.0"
+bitcoinsuite-error = { path = "../../bitcoinsuite/bitcoinsuite-error" }
+
+# Async
+tokio = { version = "1.14", features = ["full"] }
+
+# Configuration
+serde = { version="1.0", features = ["derive"] }
+toml = "0.5"
+
+chronik-http = { path = "../chronik-http" }
+chronik-indexer = { path = "../chronik-indexer" }
+chronik-rocksdb = { path = "../chronik-rocksdb" }
+bitcoinsuite-bitcoind = { path="../../bitcoinsuite/bitcoinsuite-bitcoind" }
+bitcoinsuite-bitcoind-nng = { path="../../bitcoinsuite/bitcoinsuite-bitcoind-nng" }
+
+bitcoinsuite-core = { path = "../../bitcoinsuite/bitcoinsuite-core" }
+bitcoinsuite-ecc-secp256k1 = { path = "../../bitcoinsuite/bitcoinsuite-ecc-secp256k1" }

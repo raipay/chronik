@@ -183,8 +183,7 @@ impl SlpIndexer {
         Ok(())
     }
 
-    pub fn process_next_msg(&mut self) -> Result<()> {
-        let msg = self.pub_interface.recv()?;
+    pub fn process_msg(&mut self, msg: Message) -> Result<()> {
         match msg {
             Message::BlockConnected(block_connected) => {
                 println!("Got BlockConnected {}", block_connected.block.header.hash);
@@ -215,6 +214,12 @@ impl SlpIndexer {
             }
             msg => return Err(SlpIndexerError::UnexpectedPluginMessage(msg).into()),
         }
+        Ok(())
+    }
+
+    pub fn process_next_msg(&mut self) -> Result<()> {
+        let msg = self.pub_interface.recv()?;
+        self.process_msg(msg)?;
         Ok(())
     }
 
