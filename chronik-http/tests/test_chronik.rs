@@ -360,6 +360,106 @@ async fn test_server() -> Result<()> {
         }
     );
 
+    bitcoind.cmd_json("generatetoaddress", &["1", burn_address.as_str()])?;
+    slp_indexer.write().await.process_next_msg()?;
+
+    for (path, error_code, msg) in [
+        ("/blocks/-1/10", "invalid-field", "Invalid start_height: -1"),
+        ("/blocks/10/-1", "invalid-field", "Invalid end_height: -1"),
+        ("/blocks/10/5", "invalid-field", "Invalid end_height: 5"),
+        (
+            "/blocks/10/510",
+            "page-size-too-large",
+            "Page size too large",
+        ),
+    ] {
+        let response = client.get(format!("{}{}", url, path)).send().await?;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        check_proto_error(response, error_code, msg, true).await?;
+    }
+
+    let response = client.get(format!("{}/blocks/0/200", url)).send().await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[CONTENT_TYPE], CONTENT_TYPE_PROTOBUF);
+    let proto_blocks = proto::Blocks::decode(response.bytes().await?)?;
+    assert_eq!(proto_blocks.blocks.len(), 112);
+    {
+        let mut prev_hash = Sha256d::from_hex_be(&bitcoind.cmd_string("getblockhash", &["0"])?)?;
+        assert_eq!(
+            proto_blocks.blocks[0],
+            proto::BlockInfo {
+                hash: prev_hash.as_slice().to_vec(),
+                prev_hash: vec![0; 32],
+                height: 0,
+                n_bits: 0x207fffff,
+                timestamp: 1_600_000_000,
+                block_size: 379,
+                num_txs: 1,
+                num_inputs: 1,
+                num_outputs: 2,
+                sum_input_sats: 0,
+                sum_coinbase_output_sats: 260_000_000,
+                sum_normal_output_sats: 0,
+                sum_burned_sats: 130_000_000,
+            }
+        );
+        for block_height in 1..=110 {
+            let cur_hash = Sha256d::from_hex_be(
+                &bitcoind.cmd_string("getblockhash", &[&block_height.to_string()])?,
+            )?;
+            assert!(proto_blocks.blocks[block_height].timestamp >= 2_100_000_000);
+            assert_eq!(
+                proto_blocks.blocks[block_height],
+                proto::BlockInfo {
+                    hash: cur_hash.as_slice().to_vec(),
+                    prev_hash: prev_hash.as_slice().to_vec(),
+                    height: block_height as i32,
+                    n_bits: 0x207fffff,
+                    timestamp: proto_blocks.blocks[block_height].timestamp,
+                    block_size: 272
+                        + match block_height {
+                            1..=16 => 1,
+                            17..=110 => 2,
+                            _ => unreachable!(),
+                        },
+                    num_txs: 1,
+                    num_inputs: 1,
+                    num_outputs: 2,
+                    sum_input_sats: 0,
+                    sum_coinbase_output_sats: 260_000_000,
+                    sum_normal_output_sats: 0,
+                    sum_burned_sats: 0,
+                },
+            );
+            prev_hash = cur_hash;
+        }
+        let cur_hash = Sha256d::from_hex_be(&bitcoind.cmd_string("getblockhash", &["111"])?)?;
+        assert_eq!(
+            proto_blocks.blocks[111],
+            proto::BlockInfo {
+                hash: cur_hash.as_slice().to_vec(),
+                prev_hash: prev_hash.as_slice().to_vec(),
+                height: 111,
+                n_bits: 0x207fffff,
+                timestamp: 2100000020,
+                block_size: 391,
+                num_txs: 2,
+                num_inputs: 2,
+                num_outputs: 4,
+                sum_input_sats: 260_000_000,
+                sum_coinbase_output_sats: 260_005_000,
+                sum_normal_output_sats: 259990000,
+                sum_burned_sats: 0,
+            }
+        );
+    }
+
+    let response = client.get(format!("{}/blocks/10/20", url)).send().await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[CONTENT_TYPE], CONTENT_TYPE_PROTOBUF);
+    let proto_blocks_smaller = proto::Blocks::decode(response.bytes().await?)?;
+    assert_eq!(proto_blocks_smaller.blocks, proto_blocks.blocks[10..=20]);
+
     instance.cleanup()?;
 
     Ok(())

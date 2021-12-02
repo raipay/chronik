@@ -33,6 +33,30 @@ message Utxo {
     Network network = 9;
 }
 
+message BlockInfo {
+    bytes hash = 1;
+    bytes prev_hash = 2;
+    int32 height = 3;
+    uint32 n_bits = 4;
+    int64 timestamp = 5;
+    // Block size of this block in bytes (including headers etc.)
+    uint64 block_size = 6;
+    // Number of txs in this block
+    uint64 num_txs = 7;
+    // Total number of tx inputs in block (including coinbase)
+    uint64 num_inputs = 8;
+    // Total number of tx output in block (including coinbase)
+    uint64 num_outputs = 9;
+    // Total number of satoshis spent by tx inputs
+    int64 sum_input_sats = 10;
+    // Block reward for this block
+    int64 sum_coinbase_output_sats = 11;
+    // Total number of satoshis in non-coinbase tx outputs
+    int64 sum_normal_output_sats = 12;
+    // Total number of satoshis burned using OP_RETURN
+    int64 sum_burned_sats = 13;
+}
+
 message ScriptUtxos {
     bytes output_script = 1;
     repeated Utxo utxos = 2;
@@ -45,6 +69,10 @@ message TxHistoryPage {
 
 message Utxos {
     repeated ScriptUtxos script_utxos = 1;
+}
+
+message Blocks {
+    repeated BlockInfo blocks = 1;
 }
 
 message SlpTxData {

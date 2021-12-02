@@ -21,7 +21,8 @@ use tokio::sync::{broadcast, RwLock};
 use tower_http::compression::CompressionLayer;
 
 pub const DEFAULT_PAGE_SIZE: usize = 25;
-pub const MAX_PAGE_SIZE: usize = 200;
+pub const MAX_HISTORY_PAGE_SIZE: usize = 200;
+pub const MAX_BLOCKS_PAGE_SIZE: usize = 500;
 
 pub type SlpIndexerRef = Arc<RwLock<SlpIndexer>>;
 
@@ -44,6 +45,10 @@ pub enum ChronikServerError {
     #[invalid_client_input()]
     #[error("Unexpected message type {0}")]
     UnexpectedMessageType(&'static str),
+
+    #[invalid_user_input()]
+    #[error("Page size too large")]
+    PageSizeTooLarge,
 }
 
 use crate::{
@@ -59,6 +64,7 @@ impl ChronikServer {
     pub async fn run(self) -> Result<(), Report> {
         let addr = self.addr;
         let app = Router::new()
+            .route("/blocks/:start/:end", routing::get(handle_blocks))
             .route("/tx/:txid", routing::get(handle_tx))
             .route(
                 "/script/:type/:payload/history",
@@ -79,6 +85,58 @@ impl ChronikServer {
 
         Ok(())
     }
+}
+
+async fn handle_blocks(
+    Path((start_height, end_height)): Path<(i32, i32)>,
+    Extension(server): Extension<ChronikServer>,
+) -> Result<Protobuf<proto::Blocks>, ReportError> {
+    if start_height < 0 {
+        return Err(InvalidField {
+            name: "start_height",
+            value: start_height.to_string(),
+        }
+        .into());
+    }
+    if end_height < start_height {
+        return Err(InvalidField {
+            name: "end_height",
+            value: end_height.to_string(),
+        }
+        .into());
+    }
+    let num_blocks = end_height - start_height + 1;
+    if num_blocks as usize > MAX_BLOCKS_PAGE_SIZE {
+        return Err(PageSizeTooLarge.into());
+    }
+    let slp_indexer = server.slp_indexer.read().await;
+    let block_stats_reader = slp_indexer.db().block_stats()?;
+    let block_reader = slp_indexer.db().blocks()?;
+    let mut blocks = Vec::new();
+    for block_height in start_height..=end_height {
+        let block = block_reader.by_height(block_height)?;
+        let block_stats = block_stats_reader.by_height(block_height)?;
+        let (block, block_stats) = match block.zip(block_stats) {
+            Some(tuple) => tuple,
+            None => break,
+        };
+        blocks.push(proto::BlockInfo {
+            hash: block.hash.as_slice().to_vec(),
+            prev_hash: block.prev_hash.as_slice().to_vec(),
+            height: block.height,
+            n_bits: block.n_bits,
+            timestamp: block.timestamp,
+            block_size: block_stats.block_size,
+            num_txs: block_stats.num_txs,
+            num_inputs: block_stats.num_inputs,
+            num_outputs: block_stats.num_outputs,
+            sum_input_sats: block_stats.sum_input_sats,
+            sum_coinbase_output_sats: block_stats.sum_coinbase_output_sats,
+            sum_normal_output_sats: block_stats.sum_normal_output_sats,
+            sum_burned_sats: block_stats.sum_burned_sats,
+        });
+    }
+    Ok(Protobuf(proto::Blocks { blocks }))
 }
 
 async fn handle_tx(
@@ -115,12 +173,8 @@ async fn handle_script_history(
         })?,
         None => DEFAULT_PAGE_SIZE,
     };
-    if page_size > MAX_PAGE_SIZE {
-        return Err(InvalidField {
-            name: "page_size",
-            value: page_size.to_string(),
-        }
-        .into());
+    if page_size > MAX_HISTORY_PAGE_SIZE {
+        return Err(PageSizeTooLarge.into());
     }
     let page_num: usize = match query_params.get("page") {
         Some(page_num) => page_num.parse().map_err(|_| InvalidField {
