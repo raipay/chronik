@@ -9,10 +9,11 @@ use rocksdb::WriteBatch;
 use thiserror::Error;
 
 use crate::{
-    input_tx_nums::fetch_input_tx_nums, Block, BlockHeight, BlockReader, BlockTxs, BlockWriter, Db,
-    MempoolData, MempoolDeleteMode, MempoolSlpData, MempoolTxEntry, MempoolWriter, ScriptTxsConf,
-    ScriptTxsReader, ScriptTxsWriter, ScriptTxsWriterCache, SlpReader, SlpWriter, SpendsReader,
-    SpendsWriter, Timings, TxReader, TxWriter, UtxosReader, UtxosWriter,
+    input_tx_nums::fetch_input_tx_nums, Block, BlockHeight, BlockReader, BlockStatsReader,
+    BlockStatsWriter, BlockTxs, BlockWriter, Db, MempoolData, MempoolDeleteMode, MempoolSlpData,
+    MempoolTxEntry, MempoolWriter, ScriptTxsConf, ScriptTxsReader, ScriptTxsWriter,
+    ScriptTxsWriterCache, SlpReader, SlpWriter, SpendsReader, SpendsWriter, Timings, TxReader,
+    TxWriter, UtxosReader, UtxosWriter,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
@@ -54,6 +55,10 @@ impl IndexDb {
 
     pub fn blocks(&self) -> Result<BlockReader> {
         BlockReader::new(&self.db)
+    }
+
+    pub fn block_stats(&self) -> Result<BlockStatsReader> {
+        BlockStatsReader::new(&self.db)
     }
 
     pub fn txs(&self) -> Result<TxReader> {
@@ -98,6 +103,7 @@ impl IndexDb {
     ) -> Result<()> {
         let mut timings = self.timings.write().unwrap();
         let block_writer = BlockWriter::new(&self.db)?;
+        let block_stats_writer = BlockStatsWriter::new(&self.db)?;
         let tx_writer = TxWriter::new(&self.db)?;
         let script_txs_writer = ScriptTxsWriter::new(&self.db, self.script_txs_conf.clone())?;
         let utxo_writer = UtxosWriter::new(&self.db)?;
@@ -110,6 +116,16 @@ impl IndexDb {
         timings.timings.start_timer();
         block_writer.insert(&mut batch, block)?;
         timings.timings.stop_timer("blocks");
+
+        timings.timings.start_timer();
+        block_stats_writer.insert_block_txs(
+            &mut batch,
+            block,
+            txs,
+            block_txs,
+            &block_spent_output_fn,
+        )?;
+        timings.timings.stop_timer("block_stats");
 
         timings.timings.start_timer();
         let first_tx_num = tx_writer.insert_block_txs(&mut batch, block_txs)?;
@@ -180,6 +196,7 @@ impl IndexDb {
         data: &mut IndexMemData,
     ) -> Result<()> {
         let block_writer = BlockWriter::new(&self.db)?;
+        let block_stats_writer = BlockStatsWriter::new(&self.db)?;
         let tx_writer = TxWriter::new(&self.db)?;
         let conf = ScriptTxsConf { page_size: 1000 };
         let script_txs_writer = ScriptTxsWriter::new(&self.db, conf)?;
@@ -195,6 +212,7 @@ impl IndexDb {
             .blocks()?
             .by_hash(block_hash)?
             .ok_or_else(|| UnknownBlock(block_hash.clone()))?;
+        block_stats_writer.delete_by_height(&mut batch, height)?;
         tx_writer.delete_block_txs(&mut batch, block.height)?;
         script_txs_writer.delete_block_txs(
             &mut batch,

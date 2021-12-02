@@ -1,3 +1,4 @@
+mod block_stats;
 mod blocks;
 mod data;
 mod db;
@@ -18,6 +19,7 @@ mod timings;
 mod txs;
 mod utxos;
 
+pub use crate::block_stats::*;
 pub use crate::blocks::*;
 pub use crate::db::*;
 pub use crate::indexdb::*;

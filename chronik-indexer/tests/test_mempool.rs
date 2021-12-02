@@ -20,7 +20,8 @@ use bitcoinsuite_test_utils::bin_folder;
 use bitcoinsuite_test_utils_blockchain::build_tx;
 use chronik_indexer::{subscribers::SubscribeMessage, SlpIndexer, UtxoState, UtxoStateVariant};
 use chronik_rocksdb::{
-    Db, IndexDb, IndexMemData, MempoolTxEntry, PayloadPrefix, ScriptPayload, ScriptTxsConf,
+    BlockStats, Db, IndexDb, IndexMemData, MempoolTxEntry, PayloadPrefix, ScriptPayload,
+    ScriptTxsConf,
 };
 use pretty_assertions::{assert_eq, assert_ne};
 use tempdir::TempDir;
@@ -938,6 +939,73 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
             state: UtxoStateVariant::NoSuchTx,
         },
     );
+
+    let block_stats_reader = slp_indexer.db().block_stats()?;
+    // Check genesis stats
+    assert_eq!(
+        block_stats_reader.by_height(0)?,
+        Some(BlockStats {
+            block_size: 379,
+            num_txs: 1,
+            num_inputs: 1,
+            num_outputs: 2,
+            sum_input_sats: 0,
+            sum_coinbase_output_sats: 260_000_000,
+            sum_normal_output_sats: 0,
+            sum_burned_sats: 130_000_000,
+        })
+    );
+    // Check generated block stats
+    for block_height in 1..=110 {
+        assert_eq!(
+            block_stats_reader.by_height(block_height)?,
+            Some(BlockStats {
+                block_size: 272
+                    + match block_height {
+                        1..=16 => 1,
+                        17..=110 => 2,
+                        _ => unreachable!(),
+                    },
+                num_txs: 1,
+                num_inputs: 1,
+                num_outputs: 2,
+                sum_input_sats: 0,
+                sum_coinbase_output_sats: 260_000_000,
+                sum_normal_output_sats: 0,
+                sum_burned_sats: 0,
+            }),
+            "different at height {}",
+            block_height
+        );
+    }
+    // Check manually mined block stats
+    assert_eq!(
+        block_stats_reader.by_height(111)?,
+        Some(BlockStats {
+            block_size: 460,
+            num_txs: 2,
+            num_inputs: 2,
+            num_outputs: 4,
+            sum_input_sats: 260_000_000,
+            sum_coinbase_output_sats: 260_000_000,
+            sum_normal_output_sats: 259_990_000,
+            sum_burned_sats: 0,
+        }),
+    );
+    assert_eq!(
+        block_stats_reader.by_height(112)?,
+        Some(BlockStats {
+            block_size: 709,
+            num_txs: 3,
+            num_inputs: 5,
+            num_outputs: 6,
+            sum_input_sats: 1_039_960_000,
+            sum_coinbase_output_sats: 260_000_000,
+            sum_normal_output_sats: 1_039_919_999,
+            sum_burned_sats: 0,
+        }),
+    );
+    assert_eq!(block_stats_reader.by_height(113)?, None);
 
     Ok(())
 }
