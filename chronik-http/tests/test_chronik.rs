@@ -342,17 +342,17 @@ async fn test_server() -> Result<()> {
                     state: proto::UtxoStateVariant::Spent as i32,
                 },
                 proto::UtxoState {
-                    height: 0,
+                    height: -1,
                     is_confirmed: false,
                     state: proto::UtxoStateVariant::Unspent as i32,
                 },
                 proto::UtxoState {
-                    height: 0,
+                    height: -1,
                     is_confirmed: false,
                     state: proto::UtxoStateVariant::NoSuchOutput as i32,
                 },
                 proto::UtxoState {
-                    height: 0,
+                    height: -1,
                     is_confirmed: false,
                     state: proto::UtxoStateVariant::NoSuchTx as i32,
                 }

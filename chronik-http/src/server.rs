@@ -299,7 +299,7 @@ async fn handle_validate_utxos(
                 out_idx: outpoint.out_idx,
             })?;
             Ok(proto::UtxoState {
-                height: utxo_state.height.unwrap_or_default(),
+                height: utxo_state.height.unwrap_or(-1),
                 is_confirmed: utxo_state.height.is_some(),
                 state: match utxo_state.state {
                     UtxoStateVariant::Unspent => proto::UtxoStateVariant::Unspent,
