@@ -107,6 +107,8 @@ pub fn report_to_error_meta(report: &Report) -> Option<&dyn ErrorMeta> {
         Some(err)
     } else if let Some(err) = report.downcast_ref::<ChronikValidationError>() {
         Some(err)
+    } else if let Some(err) = chronik_indexer::error::report_to_error_meta(report) {
+        Some(err)
     } else {
         None
     }

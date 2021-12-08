@@ -8,7 +8,7 @@ use axum::{
     response::IntoResponse,
     routing, AddExtensionLayer, Router,
 };
-use bitcoinsuite_core::{Hashed, OutPoint, Sha256d};
+use bitcoinsuite_core::{BitcoinCode, BitcoinSuiteError, Hashed, OutPoint, Sha256d, UnhashedTx};
 use bitcoinsuite_error::{ErrorMeta, Report};
 use bitcoinsuite_slp::{SlpTokenType, SlpTxTypeVariant};
 use chronik_indexer::{subscribers::SubscribeMessage, SlpIndexer, UtxoStateVariant};
@@ -57,6 +57,10 @@ pub enum ChronikServerError {
     #[invalid_user_input()]
     #[error("Page size too large")]
     PageSizeTooLarge,
+
+    #[invalid_user_input()]
+    #[error("Invalid tx encoding: {0}")]
+    InvalidTxEncoding(BitcoinSuiteError),
 }
 
 use crate::{
@@ -75,6 +79,7 @@ impl ChronikServer {
     pub async fn run(self) -> Result<(), Report> {
         let addr = self.addr;
         let app = Router::new()
+            .route("/broadcast-tx", routing::post(handle_broadcast_tx))
             .route("/blocks/:start/:end", routing::get(handle_blocks))
             .route("/block/:hash_or_height", routing::get(handle_block))
             .route("/tx/:txid", routing::get(handle_tx))
@@ -97,6 +102,19 @@ impl ChronikServer {
 
         Ok(())
     }
+}
+
+async fn handle_broadcast_tx(
+    Protobuf(broadcast_request): Protobuf<proto::BroadcastTxRequest>,
+    Extension(server): Extension<ChronikServer>,
+) -> Result<Protobuf<proto::BroadcastTxResponse>, ReportError> {
+    let tx = UnhashedTx::deser(&mut broadcast_request.raw_tx.into()).map_err(InvalidTxEncoding)?;
+    let slp_indexer = server.slp_indexer.read().await;
+    let check_slp = !broadcast_request.skip_slp_check;
+    let txid = slp_indexer.broadcast().broadcast_tx(&tx, check_slp)?;
+    Ok(Protobuf(proto::BroadcastTxResponse {
+        txid: txid.as_slice().to_vec(),
+    }))
 }
 
 async fn handle_blocks(

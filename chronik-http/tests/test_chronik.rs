@@ -133,8 +133,23 @@ async fn test_server() -> Result<()> {
             },
         ],
     );
-    let txid_hex = bitcoind.cmd_string("sendrawtransaction", &[&tx.ser().hex()])?;
-    let txid = Sha256d::from_hex_be(&txid_hex)?;
+
+    let response = client
+        .post(format!("{}/broadcast-tx", url))
+        .header(CONTENT_TYPE, CONTENT_TYPE_PROTOBUF)
+        .body(
+            proto::BroadcastTxRequest {
+                raw_tx: tx.ser().to_vec(),
+                skip_slp_check: false,
+            }
+            .encode_to_vec(),
+        )
+        .send()
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[CONTENT_TYPE], CONTENT_TYPE_PROTOBUF);
+    let proto_tx_response = proto::BroadcastTxResponse::decode(response.bytes().await?)?;
+    let txid = Sha256d::from_slice(&proto_tx_response.txid)?;
     slp_indexer.write().await.process_next_msg()?;
 
     // msg from ws (within 50ms)
@@ -160,10 +175,7 @@ async fn test_server() -> Result<()> {
     )
     .await?;
 
-    let response = client
-        .get(format!("{}/tx/{}", url, txid_hex))
-        .send()
-        .await?;
+    let response = client.get(format!("{}/tx/{}", url, txid)).send().await?;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()[CONTENT_TYPE], CONTENT_TYPE_PROTOBUF);
     let proto_tx = proto::Tx::decode(response.bytes().await?)?;
