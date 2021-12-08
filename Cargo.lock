@@ -422,6 +422,7 @@ dependencies = [
  "chronik-rocksdb",
  "futures",
  "hex",
+ "http",
  "hyper",
  "itertools",
  "pretty_assertions",

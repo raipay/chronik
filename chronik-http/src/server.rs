@@ -6,7 +6,8 @@ use axum::{
         Extension, Path, Query,
     },
     response::IntoResponse,
-    routing, AddExtensionLayer, Router,
+    routing::{self, MethodFilter},
+    AddExtensionLayer, Router,
 };
 use bitcoinsuite_core::{BitcoinCode, BitcoinSuiteError, Hashed, OutPoint, Sha256d, UnhashedTx};
 use bitcoinsuite_error::{ErrorMeta, Report};
@@ -79,7 +80,10 @@ impl ChronikServer {
     pub async fn run(self) -> Result<(), Report> {
         let addr = self.addr;
         let app = Router::new()
-            .route("/broadcast-tx", routing::post(handle_broadcast_tx))
+            .route(
+                "/broadcast-tx",
+                routing::post(handle_broadcast_tx).on(MethodFilter::OPTIONS, handle_post_options),
+            )
             .route("/blocks/:start/:end", routing::get(handle_blocks))
             .route("/block/:hash_or_height", routing::get(handle_block))
             .route("/tx/:txid", routing::get(handle_tx))
@@ -91,7 +95,10 @@ impl ChronikServer {
                 "/script/:type/:payload/utxos",
                 routing::get(handle_script_utxos),
             )
-            .route("/validate-utxos", routing::post(handle_validate_utxos))
+            .route(
+                "/validate-utxos",
+                routing::post(handle_validate_utxos).on(MethodFilter::OPTIONS, handle_post_options),
+            )
             .route("/ws", routing::get(handle_subscribe))
             .layer(AddExtensionLayer::new(self))
             .layer(CompressionLayer::new());
@@ -102,6 +109,13 @@ impl ChronikServer {
 
         Ok(())
     }
+}
+
+async fn handle_post_options() -> Result<http::Response<axum::body::Body>, ReportError> {
+    http::Response::builder()
+        .header("Allow", "OPTIONS, HEAD, POST")
+        .body(axum::body::Body::empty())
+        .map_err(|err| ReportError(err.into()))
 }
 
 async fn handle_broadcast_tx(

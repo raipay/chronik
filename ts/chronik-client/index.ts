@@ -310,6 +310,7 @@ async function _post(
   const response = await axios.post(`${url}${path}`, data, {
     responseType: "arraybuffer",
     validateStatus: undefined,
+    transformRequest: x => x,
     headers: {
       "Content-Type": "application/x-protobuf",
     },

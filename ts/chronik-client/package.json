@@ -1,6 +1,6 @@
 {
   "name": "chronik-client",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "description": "A client for accessing the Chronik Indexer API",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -37,6 +37,8 @@
     "@types/ws": "^8.2.1",
     "axios": "^0.21.1",
     "isomorphic-ws": "^4.0.1",
+    "long": "^5.2.0",
+    "protobufjs": "^6.11.2",
     "ws": "^8.3.0"
   }
 }
