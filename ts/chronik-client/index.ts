@@ -35,6 +35,25 @@ export class ChronikClient {
     }
   }
 
+  /** Broadcasts the `rawTx` on the network.
+   * If `skipSlpCheck` is false, it will be checked that the tx doesn't burn
+   * any SLP tokens before broadcasting.
+   */
+  public async broadcastTx(
+    rawTx: Uint8Array | string,
+    skipSlpCheck = false,
+  ): Promise<{ txid: string }> {
+    const request = proto.BroadcastTxRequest.encode({
+      rawTx: typeof rawTx === "string" ? fromHex(rawTx) : rawTx,
+      skipSlpCheck,
+    }).finish()
+    const data = await _post(this._url, "/broadcast-tx", request)
+    const broadcastResponse = proto.BroadcastTxResponse.decode(data)
+    return {
+      txid: toHexRev(broadcastResponse.txid),
+    }
+  }
+
   /** Fetch the block given hash or height. */
   public async block(hashOrHeight: string | number): Promise<Block> {
     const data = await _get(this._url, `/block/${hashOrHeight}`)

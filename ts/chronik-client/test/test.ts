@@ -105,6 +105,19 @@ describe("new ChronikClient", () => {
   })
 })
 
+describe("/broadcast-tx", () => {
+  const chronik = new ChronikClient(TEST_URL)
+  it("throws a decode error", async () => {
+    assert.isRejected(
+      chronik.broadcastTx("00000000"),
+      Error,
+      "Failed getting /broadcast-tx (invalid-tx-encoding): Invalid tx " +
+        "encoding: Bytes error: Index 1 is out of bounds for array with " +
+        "length 0",
+    )
+  })
+})
+
 describe("/block/:hash", () => {
   const chronik = new ChronikClient(TEST_URL)
   it("gives us the Genesis block by hash", async () => {

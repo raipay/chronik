@@ -188,6 +188,15 @@ export interface ValidateUtxoResponse {
   utxoStates: UtxoState[]
 }
 
+export interface BroadcastTxRequest {
+  rawTx: Uint8Array
+  skipSlpCheck: boolean
+}
+
+export interface BroadcastTxResponse {
+  txid: Uint8Array
+}
+
 export interface Tx {
   txid: Uint8Array
   version: number
@@ -481,6 +490,137 @@ export const ValidateUtxoResponse = {
     const message = { ...baseValidateUtxoResponse } as ValidateUtxoResponse
     message.utxoStates =
       object.utxoStates?.map(e => UtxoState.fromPartial(e)) || []
+    return message
+  },
+}
+
+const baseBroadcastTxRequest: object = { skipSlpCheck: false }
+
+export const BroadcastTxRequest = {
+  encode(
+    message: BroadcastTxRequest,
+    writer: _m0.Writer = _m0.Writer.create(),
+  ): _m0.Writer {
+    if (message.rawTx.length !== 0) {
+      writer.uint32(10).bytes(message.rawTx)
+    }
+    if (message.skipSlpCheck === true) {
+      writer.uint32(16).bool(message.skipSlpCheck)
+    }
+    return writer
+  },
+
+  decode(input: _m0.Reader | Uint8Array, length?: number): BroadcastTxRequest {
+    const reader = input instanceof _m0.Reader ? input : new _m0.Reader(input)
+    let end = length === undefined ? reader.len : reader.pos + length
+    const message = { ...baseBroadcastTxRequest } as BroadcastTxRequest
+    message.rawTx = new Uint8Array()
+    while (reader.pos < end) {
+      const tag = reader.uint32()
+      switch (tag >>> 3) {
+        case 1:
+          message.rawTx = reader.bytes()
+          break
+        case 2:
+          message.skipSlpCheck = reader.bool()
+          break
+        default:
+          reader.skipType(tag & 7)
+          break
+      }
+    }
+    return message
+  },
+
+  fromJSON(object: any): BroadcastTxRequest {
+    const message = { ...baseBroadcastTxRequest } as BroadcastTxRequest
+    message.rawTx =
+      object.rawTx !== undefined && object.rawTx !== null
+        ? bytesFromBase64(object.rawTx)
+        : new Uint8Array()
+    message.skipSlpCheck =
+      object.skipSlpCheck !== undefined && object.skipSlpCheck !== null
+        ? Boolean(object.skipSlpCheck)
+        : false
+    return message
+  },
+
+  toJSON(message: BroadcastTxRequest): unknown {
+    const obj: any = {}
+    message.rawTx !== undefined &&
+      (obj.rawTx = base64FromBytes(
+        message.rawTx !== undefined ? message.rawTx : new Uint8Array(),
+      ))
+    message.skipSlpCheck !== undefined &&
+      (obj.skipSlpCheck = message.skipSlpCheck)
+    return obj
+  },
+
+  fromPartial<I extends Exact<DeepPartial<BroadcastTxRequest>, I>>(
+    object: I,
+  ): BroadcastTxRequest {
+    const message = { ...baseBroadcastTxRequest } as BroadcastTxRequest
+    message.rawTx = object.rawTx ?? new Uint8Array()
+    message.skipSlpCheck = object.skipSlpCheck ?? false
+    return message
+  },
+}
+
+const baseBroadcastTxResponse: object = {}
+
+export const BroadcastTxResponse = {
+  encode(
+    message: BroadcastTxResponse,
+    writer: _m0.Writer = _m0.Writer.create(),
+  ): _m0.Writer {
+    if (message.txid.length !== 0) {
+      writer.uint32(10).bytes(message.txid)
+    }
+    return writer
+  },
+
+  decode(input: _m0.Reader | Uint8Array, length?: number): BroadcastTxResponse {
+    const reader = input instanceof _m0.Reader ? input : new _m0.Reader(input)
+    let end = length === undefined ? reader.len : reader.pos + length
+    const message = { ...baseBroadcastTxResponse } as BroadcastTxResponse
+    message.txid = new Uint8Array()
+    while (reader.pos < end) {
+      const tag = reader.uint32()
+      switch (tag >>> 3) {
+        case 1:
+          message.txid = reader.bytes()
+          break
+        default:
+          reader.skipType(tag & 7)
+          break
+      }
+    }
+    return message
+  },
+
+  fromJSON(object: any): BroadcastTxResponse {
+    const message = { ...baseBroadcastTxResponse } as BroadcastTxResponse
+    message.txid =
+      object.txid !== undefined && object.txid !== null
+        ? bytesFromBase64(object.txid)
+        : new Uint8Array()
+    return message
+  },
+
+  toJSON(message: BroadcastTxResponse): unknown {
+    const obj: any = {}
+    message.txid !== undefined &&
+      (obj.txid = base64FromBytes(
+        message.txid !== undefined ? message.txid : new Uint8Array(),
+      ))
+    return obj
+  },
+
+  fromPartial<I extends Exact<DeepPartial<BroadcastTxResponse>, I>>(
+    object: I,
+  ): BroadcastTxResponse {
+    const message = { ...baseBroadcastTxResponse } as BroadcastTxResponse
+    message.txid = object.txid ?? new Uint8Array()
     return message
   },
 }
