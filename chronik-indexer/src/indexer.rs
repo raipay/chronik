@@ -17,6 +17,7 @@ use chronik_rocksdb::{
 };
 
 use crate::{
+    broadcast::Broadcast,
     subscribers::{SubscribeMessage, Subscribers},
     txs::Txs,
     Blocks, ScriptHistory, Utxos,
@@ -249,6 +250,10 @@ impl SlpIndexer {
 
     pub fn utxos(&self) -> Utxos {
         Utxos::new(self)
+    }
+
+    pub fn broadcast(&self) -> Broadcast {
+        Broadcast::new(self)
     }
 
     pub fn subscribers_mut(&mut self) -> &mut Subscribers {

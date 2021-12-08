@@ -191,8 +191,7 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
             },
         ],
     );
-    let txid_hex = bitcoind.cmd_string("sendrawtransaction", &[&tx1.ser().hex()])?;
-    let txid1 = Sha256d::from_hex_be(&txid_hex)?;
+    let txid1 = slp_indexer.broadcast().broadcast_tx(&tx1, true)?;
     let mut rich_tx1 = RichTx {
         tx: tx1.clone().hashed(),
         txid: txid1.clone(),
@@ -317,8 +316,7 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
             },
         ],
     );
-    let txid_hex = bitcoind.cmd_string("sendrawtransaction", &[&tx2.ser().hex()])?;
-    let txid2 = Sha256d::from_hex_be(&txid_hex)?;
+    let txid2 = slp_indexer.broadcast().broadcast_tx(&tx2, true)?;
     let token_id = TokenId::new(txid2.clone());
     let slp_tx_data2 = SlpValidTxData {
         slp_tx_data: SlpTxData {
@@ -479,8 +477,7 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
         ],
         lock_time: 0,
     };
-    let txid_hex = bitcoind.cmd_string("sendrawtransaction", &[&tx3.ser().hex()])?;
-    let txid3 = Sha256d::from_hex_be(&txid_hex)?;
+    let txid3 = slp_indexer.broadcast().broadcast_tx(&tx3, true)?;
     let slp_tx_data3 = SlpValidTxData {
         slp_tx_data: SlpTxData {
             input_tokens: vec![SlpToken::EMPTY, SlpToken::EMPTY, SlpToken::amount(100)],

@@ -1,4 +1,5 @@
 mod blocks;
+pub mod broadcast;
 mod indexer;
 mod script_history;
 pub mod subscribers;

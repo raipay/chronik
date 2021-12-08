@@ -14,61 +14,15 @@ pub struct MempoolSlpData {
 
 impl MempoolSlpData {
     pub fn insert_mempool_tx(&mut self, db: &Db, txid: &Sha256d, tx: &UnhashedTx) -> Result<()> {
-        let slp_error = match parse_slp_tx(txid, tx) {
-            Ok(parse_data) => {
-                let tx_reader = TxReader::new(db)?;
-                let slp_reader = SlpReader::new(db)?;
-                let mut spent_outputs = Vec::with_capacity(tx.inputs.len());
-                for input in &tx.inputs {
-                    let out_idx = input.prev_out.out_idx as usize;
-                    spent_outputs.push(match self.valid_slp_txs.get(&input.prev_out.txid) {
-                        Some(tx_data) => {
-                            let slp = &tx_data.slp_tx_data;
-                            slp.output_tokens.get(out_idx).map(|&token| SlpSpentOutput {
-                                token_id: slp.token_id.clone(),
-                                token_type: slp.slp_token_type,
-                                token,
-                                group_token_id: slp.group_token_id.clone(),
-                            })
-                        }
-                        None => match self.invalid_slp_txs.get(&input.prev_out.txid) {
-                            Some(_) => None,
-                            None => tx_reader
-                                .tx_num_by_txid(&input.prev_out.txid)?
-                                .and_then(|tx_num| {
-                                    slp_reader.slp_data_by_tx_num(tx_num).transpose()
-                                })
-                                .transpose()?
-                                .and_then(|(slp_tx_data, _)| {
-                                    let token = *slp_tx_data.output_tokens.get(out_idx)?;
-                                    Some(SlpSpentOutput {
-                                        token_id: slp_tx_data.token_id,
-                                        token_type: slp_tx_data.slp_token_type,
-                                        token,
-                                        group_token_id: slp_tx_data.group_token_id,
-                                    })
-                                }),
-                        },
-                    });
-                }
-                match validate_slp_tx(
-                    parse_data,
-                    &spent_outputs
-                        .iter()
-                        .map(|spent_output| spent_output.as_ref())
-                        .collect::<Vec<_>>(),
-                ) {
-                    Ok(valid_tx_data) => {
-                        self.valid_slp_txs.insert(txid.clone(), valid_tx_data);
-                        return Ok(());
-                    }
-                    Err(slp_error) => slp_error,
+        match self.validate_slp_tx(db, txid, tx)? {
+            Ok(valid_tx_data) => {
+                self.valid_slp_txs.insert(txid.clone(), valid_tx_data);
+            }
+            Err(slp_error) => {
+                if !is_ignored_error(&slp_error) {
+                    self.invalid_slp_txs.insert(txid.clone(), slp_error);
                 }
             }
-            Err(slp_error) => slp_error,
-        };
-        if !is_ignored_error(&slp_error) {
-            self.invalid_slp_txs.insert(txid.clone(), slp_error);
         }
         Ok(())
     }
@@ -76,6 +30,61 @@ impl MempoolSlpData {
     pub fn delete_mempool_tx(&mut self, txid: &Sha256d) {
         self.valid_slp_txs.remove(txid);
         self.invalid_slp_txs.remove(txid);
+    }
+
+    pub fn validate_slp_tx(
+        &self,
+        db: &Db,
+        txid: &Sha256d,
+        tx: &UnhashedTx,
+    ) -> Result<std::result::Result<SlpValidTxData, SlpError>> {
+        let parse_data = match parse_slp_tx(txid, tx) {
+            Ok(parse_data) => parse_data,
+            Err(slp_error) => return Ok(Err(slp_error)),
+        };
+        let tx_reader = TxReader::new(db)?;
+        let slp_reader = SlpReader::new(db)?;
+        let mut spent_outputs = Vec::with_capacity(tx.inputs.len());
+        for input in &tx.inputs {
+            let out_idx = input.prev_out.out_idx as usize;
+            spent_outputs.push(match self.valid_slp_txs.get(&input.prev_out.txid) {
+                Some(tx_data) => {
+                    let slp = &tx_data.slp_tx_data;
+                    slp.output_tokens.get(out_idx).map(|&token| SlpSpentOutput {
+                        token_id: slp.token_id.clone(),
+                        token_type: slp.slp_token_type,
+                        token,
+                        group_token_id: slp.group_token_id.clone(),
+                    })
+                }
+                None => match self.invalid_slp_txs.get(&input.prev_out.txid) {
+                    Some(_) => None,
+                    None => tx_reader
+                        .tx_num_by_txid(&input.prev_out.txid)?
+                        .and_then(|tx_num| slp_reader.slp_data_by_tx_num(tx_num).transpose())
+                        .transpose()?
+                        .and_then(|(slp_tx_data, _)| {
+                            let token = *slp_tx_data.output_tokens.get(out_idx)?;
+                            Some(SlpSpentOutput {
+                                token_id: slp_tx_data.token_id,
+                                token_type: slp_tx_data.slp_token_type,
+                                token,
+                                group_token_id: slp_tx_data.group_token_id,
+                            })
+                        }),
+                },
+            });
+        }
+        match validate_slp_tx(
+            parse_data,
+            &spent_outputs
+                .iter()
+                .map(|spent_output| spent_output.as_ref())
+                .collect::<Vec<_>>(),
+        ) {
+            Ok(valid_tx_data) => Ok(Ok(valid_tx_data)),
+            Err(slp_error) => Ok(Err(slp_error)),
+        }
     }
 
     pub fn slp_tx_data(&self, txid: &Sha256d) -> Option<&SlpValidTxData> {

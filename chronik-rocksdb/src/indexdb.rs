@@ -5,6 +5,7 @@ use std::{
 
 use bitcoinsuite_core::{Sha256d, TxOutput, UnhashedTx};
 use bitcoinsuite_error::{ErrorMeta, Result};
+use bitcoinsuite_slp::{SlpError, SlpValidTxData};
 use rocksdb::WriteBatch;
 use thiserror::Error;
 
@@ -91,6 +92,15 @@ impl IndexDb {
 
     pub fn mempool_slp<'a>(&self, data: &'a IndexMemData) -> &'a MempoolSlpData {
         &data.mempool_slp
+    }
+
+    pub fn validate_slp_tx<'a>(
+        &self,
+        data: &'a IndexMemData,
+        txid: &Sha256d,
+        tx: &UnhashedTx,
+    ) -> Result<std::result::Result<SlpValidTxData, SlpError>> {
+        data.mempool_slp.validate_slp_tx(&self.db, txid, tx)
     }
 
     pub fn insert_block<'b>(
