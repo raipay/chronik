@@ -7,10 +7,18 @@ import { fromHex, fromHexRev, toHex, toHexRev } from "./hex"
 
 type MessageEvent = ws.MessageEvent | { data: Blob }
 
+/** Client to access a Chronik instance.Plain object, without any
+ * connections. */
 export class ChronikClient {
   private _url: string
   private _wsUrl: string
 
+  /**
+   * Create a new client. This just creates an object, without any connections.
+   *
+   * @param url Url of a Chronik instance, with schema and without trailing
+   *            slash. E.g. https://chronik.be.cash/xec.
+   */
   constructor(url: string) {
     this._url = url
     if (url.endsWith("/")) {
@@ -27,12 +35,15 @@ export class ChronikClient {
     }
   }
 
+  /** Fetch the block given hash or height. */
   public async block(hashOrHeight: string | number): Promise<Block> {
     const data = await _get(this._url, `/block/${hashOrHeight}`)
     const block = proto.Block.decode(data)
     return convertToBlock(block)
   }
 
+  /** Fetch block info of a range of blocks. `startHeight` and `endHeight` are
+   * inclusive ranges. */
   public async blocks(
     startHeight: number,
     endHeight: number,
@@ -42,12 +53,15 @@ export class ChronikClient {
     return blocks.blocks.map(convertToBlockInfo)
   }
 
+  /** Fetch tx details given the txid. */
   public async tx(txid: string): Promise<Tx> {
     const data = await _get(this._url, `/tx/${txid}`)
     const tx = proto.Tx.decode(data)
     return convertToTx(tx)
   }
 
+  /** Validate the given outpoints: whether they are unspent, spent or
+   * never existed. */
   public async validateUtxos(outpoints: OutPoint[]): Promise<UtxoState[]> {
     const request = proto.ValidateUtxoRequest.encode({
       outpoints: outpoints.map(outpoint => ({
@@ -64,15 +78,18 @@ export class ChronikClient {
     }))
   }
 
+  /** Create object that allows fetching script history or UTXOs. */
   public script(scriptType: ScriptType, scriptPayload: string): ScriptEndpoint {
     return new ScriptEndpoint(this._url, scriptType, scriptPayload)
   }
 
+  /** Open a WebSocket connection to listen for updates. */
   public ws(config: WsConfig): WsEndpoint {
     return new WsEndpoint(`${this._wsUrl}/ws`, config)
   }
 }
 
+/** Allows fetching script history and UTXOs. */
 export class ScriptEndpoint {
   private _url: string
   private _scriptType: string
@@ -84,6 +101,12 @@ export class ScriptEndpoint {
     this._scriptPayload = scriptPayload
   }
 
+  /** Fetches the tx history of this script, in anti-chronological order.
+   * This means it's ordered by first-seen first. If the tx hasn't been seen
+   * by the indexer before, it's ordered by the block timestamp.
+   * @param page Page index of the tx history.
+   * @param pageSize Number of txs per page.
+   */
   public async history(
     page?: number,
     pageSize?: number,
@@ -107,6 +130,9 @@ export class ScriptEndpoint {
     }
   }
 
+  /** Fetches the current UTXO set for this script.
+   * It is grouped by output script, in case a script type can match multiple
+   * different output scripts (e.g. Taproot on Lotus). */
   public async utxos(): Promise<ScriptUtxos[]> {
     const data = await _get(
       this._url,
@@ -120,11 +146,15 @@ export class ScriptEndpoint {
   }
 }
 
+/** Config for a WebSocket connection to Chronik. */
 export interface WsConfig {
+  /** Fired when a message is sent from the WebSocket. */
   onMessage?: (msg: SubscribeMsg) => void
+  /** Fired before a reconnection attempt is made. */
   onReconnect?: (e: ws.Event) => void
 }
 
+/** WebSocket connection to Chronik. */
 export class WsEndpoint {
   private _ws: ws.WebSocket | undefined
   private _wsUrl: string
@@ -141,15 +171,20 @@ export class WsEndpoint {
     this._connect()
   }
 
+  /** Wait for the WebSocket to be connected.
+   * You cannot subscribe to messages before the WebSocket is connected. */
   public async waitForOpen() {
     await this._connected
   }
 
+  /** Subscribe to the given script type and payload.
+   * For "p2pkh", `scriptPayload` is the 20 byte public key hash. */
   public subscribe(scriptType: ScriptType, scriptPayload: string) {
     this._subs.push({ scriptType, scriptPayload })
     this._subUnsub(true, scriptType, scriptPayload)
   }
 
+  /** Unsubscribe from the given script type and payload. */
   public unsubscribe(scriptType: ScriptType, scriptPayload: string) {
     this._subs = this._subs.filter(
       sub =>
@@ -158,6 +193,8 @@ export class WsEndpoint {
     this._subUnsub(false, scriptType, scriptPayload)
   }
 
+  /** Close the WebSocket connection and prevent future any reconnection
+   * attempts. */
   public close() {
     this._closed = true
     this._ws?.close()
@@ -492,146 +529,239 @@ function convertToUtxoStateVariant(
   }
 }
 
+/** A transaction on the blockchain or in the mempool. */
 export interface Tx {
+  /** Transaction ID.
+   * - On BCH, eCash and Ergon, this is the hash of the tx.
+   * - On Lotus, this is a special serialization, omitting the input scripts.
+   */
   txid: string
+  /** `version` field of the transaction. */
   version: number
+  /** Inputs of this transaction. */
   inputs: TxInput[]
+  /** Outputs of this transaction. */
   outputs: TxOutput[]
+  /** `locktime` field of the transaction, tx is not valid before this time. */
   lockTime: number
+  /** SLP data about this transaction, if valid. */
   slpTxData: SlpTxData | undefined
+  /** A human-readable message as to why this tx is not an SLP transaction,
+   * unless trivially so. */
   slpErrorMsg: string | undefined
+  /** Block data for this tx, or undefined if not mined yet. */
   block: BlockMetadata | undefined
+  /** UNIX timestamp when this tx has first been seen in the mempool.
+   * 0 if unknown -> make sure to check.
+   */
   timeFirstSeen: Long
+  /** Which network this tx is on. */
   network: Network
 }
 
+/** An unspent transaction output (aka. UTXO, aka. "Coin") of a script. */
 export interface Utxo {
+  /** Outpoint of the UTXO. */
   outpoint: OutPoint
+  /** Which block this UTXO is in, or -1 if in the mempool. */
   blockHeight: number
+  /** Whether this UTXO is a coinbase UTXO
+   * (make sure it's buried 100 blocks before spending!) */
   isCoinbase: boolean
+  /** Value of the UTXO in satoshis. */
   value: Long
+  /** SLP data in this UTXO. */
   slpMeta: SlpMeta | undefined
+  /** SLP token of this UTXO (i.e. SLP amount + whether it's a mint baton). */
   slpToken: SlpToken | undefined
+  /** Which network this UTXO is on. */
   network: Network
 }
 
+/** Block info about a block */
 export interface BlockInfo {
+  /** Block hash of the block, in 'human-readable' (big-endian) hex encoding. */
   hash: string
+  /** Block hash of the previous block, in 'human-readable' (big-endian) hex
+   * encoding. */
   prevHash: string
+  /** Height of the block; Genesis block has height 0. */
   height: number
+  /** nBits field of the block, encodes the target compactly. */
   nBits: number
+  /** Timestamp of the block. Filled in by the miner, so might not be 100%
+   * precise. */
   timestamp: Long
-  /** Block size of this block in bytes (including headers etc.) */
+  /** Block size of this block in bytes (including headers etc.). */
   blockSize: Long
-  /** Number of txs in this block */
+  /** Number of txs in this block. */
   numTxs: Long
-  /** Total number of tx inputs in block (including coinbase) */
+  /** Total number of tx inputs in block (including coinbase). */
   numInputs: Long
-  /** Total number of tx output in block (including coinbase) */
+  /** Total number of tx output in block (including coinbase). */
   numOutputs: Long
-  /** Total number of satoshis spent by tx inputs */
+  /** Total number of satoshis spent by tx inputs. */
   sumInputSats: Long
-  /** Block reward for this block */
+  /** Total block reward for this block. */
   sumCoinbaseOutputSats: Long
-  /** Total number of satoshis in non-coinbase tx outputs */
+  /** Total number of satoshis in non-coinbase tx outputs. */
   sumNormalOutputSats: Long
-  /** Total number of satoshis burned using OP_RETURN */
+  /** Total number of satoshis burned using OP_RETURN. */
   sumBurnedSats: Long
 }
 
+/** Block on the blockchain. */
 export interface Block {
+  /** Info about the block. */
   blockInfo: BlockInfo
+  /** Txs in this block, in canonical order
+   * (at least on all supported chains). */
   txs: Tx[]
 }
 
+/** Group of UTXOs by output script. */
 export interface ScriptUtxos {
+  /** Output script in hex. */
   outputScript: string
+  /** UTXOs of the output script. */
   utxos: Utxo[]
 }
 
+/** Page of the transaction history. */
 export interface TxHistoryPage {
+  /** Txs of this page. */
   txs: Tx[]
+  /** Number of pages of the entire transaction history.
+   * This changes based on the `pageSize` provided. */
   numPages: number
 }
 
-export interface Utxos {
-  scriptUtxos: ScriptUtxos[]
-}
-
-export interface Blocks {
-  blocks: BlockInfo[]
-}
-
+/** SLP data about an SLP transaction. */
 export interface SlpTxData {
+  /** SLP metadata. */
   slpMeta: SlpMeta
+  /** Genesis info, only present for GENESIS txs. */
   genesisInfo: SlpGenesisInfo | undefined
 }
 
+/** Metadata about an SLP tx or UTXO. */
 export interface SlpMeta {
+  /** Whether this token is a normal fungible token, or an NFT or unknown. */
   tokenType: SlpTokenType
+  /** Whether this tx is a GENESIS, MINT, SEND or UNKNOWN transaction. */
   txType: SlpTxType
+  /** Token ID of this tx/UTXO, in human-readable (big-endian) hex encoding. */
   tokenId: string
+  /** Group token ID of this tx/UTXO, NFT only, in human-readable
+   * (big-endian) hex encoding.
+   * This is the token ID of the token that went into the GENESIS of this token
+   * as first input. */
   groupTokenId: string | undefined
 }
 
+/** Input of a tx, spends an output of a previous tx. */
 export interface TxInput {
+  /** Points to an output spent by this input. */
   prevOut: OutPoint
+  /** Script unlocking the output, in hex encoding.
+   * Aka. `scriptSig` in bitcoind parlance. */
   inputScript: string
+  /** Script of the output, in hex encoding.
+   * Aka. `scriptPubKey` in bitcoind parlance. */
   outputScript: string | undefined
+  /** Value of the output spent by this input, in satoshis. */
   value: Long
+  /** `sequence` field of the input; can be used for relative time locking. */
   sequenceNo: number
+  /** SLP tokens burned by this input, or `undefined` if no burn occured. */
   slpBurn: SlpBurn | undefined
+  /** SLP tokens spent by this input, or `undefined` if the tokens were burned
+   * or if there were no tokens in the output spent by this input. */
   slpToken: SlpToken | undefined
 }
 
+/** Output of a tx, creates new UTXOs. */
 export interface TxOutput {
+  /** Value of the output, in satoshis. */
   value: Long
+  /** Script of this output, locking the coins.
+   * Aka. `scriptPubKey` in bitcoind parlance. */
   outputScript: string
+  /** SLP tokens locked up in this output, or `undefined` if no tokens were sent
+   * to this output. */
   slpToken: SlpToken | undefined
+  /** Transaction & input index spending this output, or undefined if
+   * unspent. */
   spentBy: OutPoint | undefined
 }
 
+/** Metadata of a block, used in transaction data. */
 export interface BlockMetadata {
+  /** Height of the block. */
   height: number
+  /** Hash of the block. */
   hash: string
+  /** Timestamp of the block; useful if `timeFirstSeen` of a transaction is
+   * unknown. */
   timestamp: Long
 }
 
+/** Outpoint referencing an output on the blockchain (or input for field
+ * `spentBy`). */
 export interface OutPoint {
+  /** Transaction referenced by this outpoint. */
   txid: string
+  /** Index of the output in the tx referenced by this outpoint
+   * (or input index if used in field `spentBy`). */
   outIdx: number
 }
 
+/** SLP amount or whether this is a mint baton, for inputs and outputs. */
 export interface SlpToken {
+  /** SLP amount of the input or output, in base units. */
   amount: Long
+  /** Whether this input/output is a mint baton. */
   isMintBaton: boolean
 }
 
+/** SLP burn; indicates burn of some tokens. */
 export interface SlpBurn {
+  /** SLP amount/mint baton burned by this burn. */
   token: SlpToken
+  /** Token ID of the burned SLP tokens, in human-readable (big-endian) hex
+   * encoding. */
   tokenId: string
 }
 
+/** SLP info about a GENESIS transaction. */
 export interface SlpGenesisInfo {
+  /** Ticker of the token, decoded as UTF-8. */
   tokenTicker: string
+  /** Name of the token, decoded as UTF-8. */
   tokenName: string
+  /** URL of the token, decoded as UTF-8. */
   tokenDocumentUrl: string
+  /** Document hash of the token, encoded in hex (byte order as occuring in the
+   * OP_RETURN). */
   tokenDocumentHash: string
+  /** Number of decimals of the GENESIS transaction. */
   decimals: number
 }
 
+/** State of a UTXO (from `validateUtxos`). */
 export interface UtxoState {
+  /** Height of the UTXO. -1 if the tx doesn't exist or is unconfirmed.
+   * If it's confirmed (or if the output doesn't exist but the tx does),
+   * it's the height of the block confirming the tx. */
   height: number
+  /** Whether the UTXO or the transaction queried is confirmed. */
   isConfirmed: boolean
+  /** State of the UTXO, can be unconfirmed, confirmed, tx doesn't exist or
+   * output doesn't exist. */
   state: UtxoStateVariant
 }
 
-export interface Subscription {
-  scriptType: string
-  payload: string
-  isSubscribe: boolean
-}
-
+/** Message returned from the WebSocket. */
 export type SubscribeMsg =
   | Error
   | MsgAddedToMempool
@@ -639,49 +769,93 @@ export type SubscribeMsg =
   | MsgConfirmed
   | MsgReorg
 
+/** A transaction has been added to the mempool. */
 export interface MsgAddedToMempool {
   type: "AddedToMempool"
+  /** txid of the transaction, in 'human-readable' (big-endian) hex encoding. */
   txid: string
 }
 
+/** A transaction has been removed from the mempool,
+ * but not because of a confirmation (e.g. expiry, conflict, etc.).
+ */
 export interface MsgRemovedFromMempool {
   type: "RemovedFromMempool"
+  /** txid of the transaction, in 'human-readable' (big-endian) hex encoding. */
   txid: string
 }
 
+/** A transaction has been confirmed in a block. */
 export interface MsgConfirmed {
   type: "Confirmed"
+  /** txid of the transaction, in 'human-readable' (big-endian) hex encoding. */
   txid: string
 }
 
+/** A transaction used to be part of a block but now got re-orged.
+ * Usually, unless something malicious occurs, a "Confirmed" message is sent
+ * immediately afterwards.
+ */
 export interface MsgReorg {
   type: "Reorg"
+  /** txid of the transaction, in 'human-readable' (big-endian) hex encoding. */
   txid: string
 }
 
+/** Reports an error, e.g. when a subscription is malformed. */
 export interface Error {
   type: "Error"
+  /** Code for this error, e.g. "tx-not-found". */
   errorCode: string
+  /** Human-readable message for this error. */
   msg: string
+  /** Whether this error is presentable to an end-user.
+   * This is somewhat subjective, but can be used as a good heuristic. */
   isUserError: boolean
 }
 
+/** Different networks of txs/blocks/UTXOs.
+ * Supported are BCH, eCash, Lotus and Ergon. */
 export type Network = "BCH" | "XEC" | "XPI" | "XRG"
 
+/** Which SLP tx type. */
 export type SlpTxType = "GENESIS" | "SEND" | "MINT" | "UNKNOWN_TX_TYPE"
 
+/** Which SLP token type (normal fungible, NFT, unknown). */
 export type SlpTokenType =
   | "FUNGIBLE"
   | "NFT1_GROUP"
   | "NFT1_CHILD"
   | "UNKNOWN_TOKEN_TYPE"
 
+/** State of a transaction output.
+ * - `UNSPENT`: The UTXO is unspent.
+ * - `SPENT`: The output is spent and no longer part of the UTXO set.
+ * - `NO_SUCH_TX`: The tx queried does not exist.
+ * - `NO_SUCH_OUTPUT`: The output queried does not exist, but the tx does exist.
+ */
 export type UtxoStateVariant =
   | "UNSPENT"
   | "SPENT"
   | "NO_SUCH_TX"
   | "NO_SUCH_OUTPUT"
 
+/** Script type queried in the `script` method.
+ * - `other`: Script type not covered by the standard script types; payload is
+ *   the raw hex.
+ * - `p2pk`: Pay-to-Public-Key (`<pk> OP_CHECKSIG`), payload is the hex of the
+ *   pubkey (compressed (33 bytes) or uncompressed (65 bytes)).
+ * - `p2pkh`: Pay-to-Public-Key-Hash
+ *   (`OP_DUP OP_HASH160 <pkh> OP_EQUALVERIFY OP_CHECKSIG`).
+ *   Payload is the 20 byte public key hash.
+ * - `p2sh`: Pay-to-Script-Hash (`OP_HASH160 <sh> OP_EQUAL`).
+ *   Payload is the 20 byte script hash.
+ * - `p2tr-commitment`: Pay-to-Taproot
+ *   (`OP_SCRIPTTYPE OP_1 <commitment> <state>?`), only on Lotus.
+ *   Queries by the commitment. Payload is the 33 byte commitment.
+ * - `p2tr-state`: Pay-to-Taproot (`OP_SCRIPTTYPE OP_1 <commitment> <state>`),
+ *   only on Lotus. Queries by the state. Payload is the 32 byte state.
+ */
 export type ScriptType =
   | "other"
   | "p2pk"
