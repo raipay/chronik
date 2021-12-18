@@ -389,9 +389,7 @@ describe("/ws", () => {
           ws.close()
         },
       })
-      ws.waitForOpen().then(() => {
-        ws.subscribe("p2pkh", "b8ae1c47effb58f72f7bca819fe7fc252f9e852e")
-      })
+      ws.subscribe("p2pkh", "b8ae1c47effb58f72f7bca819fe7fc252f9e852e")
     })
     const msg = await promise
     expect(msg.type).to.eql("Confirmed")

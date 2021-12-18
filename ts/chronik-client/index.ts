@@ -169,29 +169,67 @@ export class ScriptEndpoint {
 export interface WsConfig {
   /** Fired when a message is sent from the WebSocket. */
   onMessage?: (msg: SubscribeMsg) => void
-  /** Fired before a reconnection attempt is made. */
+
+  /** Fired when a connection has been (re)established. */
+  onConnect?: (e: ws.Event) => void
+
+  /** Fired after a connection has been unexpectedly closed, and before a
+   * reconnection attempt is made. Only fired if `autoReconnect` is true. */
   onReconnect?: (e: ws.Event) => void
+
+  /** Fired when an error with the WebSocket occurs. */
+  onError?: (e: ws.ErrorEvent) => void
+
+  /** Fired after a connection has been manually closed, or if `autoReconnect`
+   * is false, if the WebSocket disconnects for any reason. */
+  onEnd?: (e: ws.Event) => void
+
+  /** Whether to automatically reconnect on disconnect, default true. */
+  autoReconnect?: boolean
 }
 
 /** WebSocket connection to Chronik. */
 export class WsEndpoint {
+  /** Fired when a message is sent from the WebSocket. */
+  public onMessage?: (msg: SubscribeMsg) => void
+
+  /** Fired when a connection has been (re)established. */
+  public onConnect?: (e: ws.Event) => void
+
+  /** Fired after a connection has been unexpectedly closed, and before a
+   * reconnection attempt is made. Only fired if `autoReconnect` is true. */
+  public onReconnect?: (e: ws.Event) => void
+
+  /** Fired when an error with the WebSocket occurs. */
+  public onError?: (e: ws.ErrorEvent) => void
+
+  /** Fired after a connection has been manually closed, or if `autoReconnect`
+   * is false, if the WebSocket disconnects for any reason. */
+  public onEnd?: (e: ws.Event) => void
+
+  /** Whether to automatically reconnect on disconnect, default true. */
+  public autoReconnect: boolean
+
   private _ws: ws.WebSocket | undefined
   private _wsUrl: string
   private _connected: Promise<ws.Event> | undefined
-  private _config: WsConfig
-  private _closed: boolean
+  private _manuallyClosed: boolean
   private _subs: { scriptType: ScriptType; scriptPayload: string }[]
 
   constructor(wsUrl: string, config: WsConfig) {
-    this._closed = false
+    this.onMessage = config.onMessage
+    this.onConnect = config.onConnect
+    this.onReconnect = config.onReconnect
+    this.onEnd = config.onEnd
+    this.autoReconnect =
+      config.autoReconnect !== undefined ? config.autoReconnect : true
+    this._manuallyClosed = false
     this._subs = []
-    this._config = config
     this._wsUrl = wsUrl
     this._connect()
   }
 
-  /** Wait for the WebSocket to be connected.
-   * You cannot subscribe to messages before the WebSocket is connected. */
+  /** Wait for the WebSocket to be connected. */
   public async waitForOpen() {
     await this._connected
   }
@@ -200,7 +238,9 @@ export class WsEndpoint {
    * For "p2pkh", `scriptPayload` is the 20 byte public key hash. */
   public subscribe(scriptType: ScriptType, scriptPayload: string) {
     this._subs.push({ scriptType, scriptPayload })
-    this._subUnsub(true, scriptType, scriptPayload)
+    if (this._ws?.readyState === WebSocket.OPEN) {
+      this._subUnsub(true, scriptType, scriptPayload)
+    }
   }
 
   /** Unsubscribe from the given script type and payload. */
@@ -209,13 +249,15 @@ export class WsEndpoint {
       sub =>
         sub.scriptType !== scriptType || sub.scriptPayload !== scriptPayload,
     )
-    this._subUnsub(false, scriptType, scriptPayload)
+    if (this._ws?.readyState === WebSocket.OPEN) {
+      this._subUnsub(false, scriptType, scriptPayload)
+    }
   }
 
   /** Close the WebSocket connection and prevent future any reconnection
    * attempts. */
   public close() {
-    this._closed = true
+    this._manuallyClosed = true
     this._ws?.close()
   }
 
@@ -228,13 +270,23 @@ export class WsEndpoint {
           this._subUnsub(true, sub.scriptType, sub.scriptPayload),
         )
         resolved(msg)
+        if (this.onConnect !== undefined) {
+          this.onConnect(msg)
+        }
       }
     })
     ws.onmessage = e => this._handleMsg(e as MessageEvent)
+    ws.onerror = e => this.onError !== undefined && this.onError(e)
     ws.onclose = e => {
-      if (this._closed) return
-      if (this._config.onReconnect !== undefined) {
-        this._config.onReconnect(e)
+      // End if manually closed or no auto-reconnect
+      if (this._manuallyClosed || !this.autoReconnect) {
+        if (this.onEnd !== undefined) {
+          this.onEnd(e)
+        }
+        return
+      }
+      if (this.onReconnect !== undefined) {
+        this.onReconnect(e)
       }
       this._connect()
     }
@@ -256,34 +308,36 @@ export class WsEndpoint {
   }
 
   private async _handleMsg(wsMsg: MessageEvent) {
-    if (this._config.onMessage === undefined) return
+    if (this.onMessage === undefined) {
+      return
+    }
     const data =
       wsMsg.data instanceof Buffer
         ? (wsMsg.data as Uint8Array)
         : new Uint8Array(await (wsMsg.data as Blob).arrayBuffer())
     const msg = proto.SubscribeMsg.decode(data)
     if (msg.error) {
-      this._config.onMessage({
+      this.onMessage({
         type: "Error",
         ...msg.error,
       })
     } else if (msg.AddedToMempool) {
-      this._config.onMessage({
+      this.onMessage({
         type: "AddedToMempool",
         txid: toHexRev(msg.AddedToMempool.txid),
       })
     } else if (msg.RemovedFromMempool) {
-      this._config.onMessage({
+      this.onMessage({
         type: "RemovedFromMempool",
         txid: toHexRev(msg.RemovedFromMempool.txid),
       })
     } else if (msg.Confirmed) {
-      this._config.onMessage({
+      this.onMessage({
         type: "Confirmed",
         txid: toHexRev(msg.Confirmed.txid),
       })
     } else if (msg.Reorg) {
-      this._config.onMessage({
+      this.onMessage({
         type: "Reorg",
         txid: toHexRev(msg.Reorg.txid),
       })
@@ -310,6 +364,7 @@ async function _post(
   const response = await axios.post(`${url}${path}`, data, {
     responseType: "arraybuffer",
     validateStatus: undefined,
+    // Prevents Axios encoding the Uint8Array as JSON or something
     transformRequest: x => x,
     headers: {
       "Content-Type": "application/x-protobuf",
