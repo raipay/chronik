@@ -197,6 +197,15 @@ export interface BroadcastTxResponse {
   txid: Uint8Array
 }
 
+export interface BroadcastTxsRequest {
+  rawTxs: Uint8Array[]
+  skipSlpCheck: boolean
+}
+
+export interface BroadcastTxsResponse {
+  txids: Uint8Array[]
+}
+
 export interface Tx {
   txid: Uint8Array
   version: number
@@ -625,6 +634,140 @@ export const BroadcastTxResponse = {
   },
 }
 
+const baseBroadcastTxsRequest: object = { skipSlpCheck: false }
+
+export const BroadcastTxsRequest = {
+  encode(
+    message: BroadcastTxsRequest,
+    writer: _m0.Writer = _m0.Writer.create(),
+  ): _m0.Writer {
+    for (const v of message.rawTxs) {
+      writer.uint32(10).bytes(v!)
+    }
+    if (message.skipSlpCheck === true) {
+      writer.uint32(16).bool(message.skipSlpCheck)
+    }
+    return writer
+  },
+
+  decode(input: _m0.Reader | Uint8Array, length?: number): BroadcastTxsRequest {
+    const reader = input instanceof _m0.Reader ? input : new _m0.Reader(input)
+    let end = length === undefined ? reader.len : reader.pos + length
+    const message = { ...baseBroadcastTxsRequest } as BroadcastTxsRequest
+    message.rawTxs = []
+    while (reader.pos < end) {
+      const tag = reader.uint32()
+      switch (tag >>> 3) {
+        case 1:
+          message.rawTxs.push(reader.bytes())
+          break
+        case 2:
+          message.skipSlpCheck = reader.bool()
+          break
+        default:
+          reader.skipType(tag & 7)
+          break
+      }
+    }
+    return message
+  },
+
+  fromJSON(object: any): BroadcastTxsRequest {
+    const message = { ...baseBroadcastTxsRequest } as BroadcastTxsRequest
+    message.rawTxs = (object.rawTxs ?? []).map((e: any) => bytesFromBase64(e))
+    message.skipSlpCheck =
+      object.skipSlpCheck !== undefined && object.skipSlpCheck !== null
+        ? Boolean(object.skipSlpCheck)
+        : false
+    return message
+  },
+
+  toJSON(message: BroadcastTxsRequest): unknown {
+    const obj: any = {}
+    if (message.rawTxs) {
+      obj.rawTxs = message.rawTxs.map(e =>
+        base64FromBytes(e !== undefined ? e : new Uint8Array()),
+      )
+    } else {
+      obj.rawTxs = []
+    }
+    message.skipSlpCheck !== undefined &&
+      (obj.skipSlpCheck = message.skipSlpCheck)
+    return obj
+  },
+
+  fromPartial<I extends Exact<DeepPartial<BroadcastTxsRequest>, I>>(
+    object: I,
+  ): BroadcastTxsRequest {
+    const message = { ...baseBroadcastTxsRequest } as BroadcastTxsRequest
+    message.rawTxs = object.rawTxs?.map(e => e) || []
+    message.skipSlpCheck = object.skipSlpCheck ?? false
+    return message
+  },
+}
+
+const baseBroadcastTxsResponse: object = {}
+
+export const BroadcastTxsResponse = {
+  encode(
+    message: BroadcastTxsResponse,
+    writer: _m0.Writer = _m0.Writer.create(),
+  ): _m0.Writer {
+    for (const v of message.txids) {
+      writer.uint32(10).bytes(v!)
+    }
+    return writer
+  },
+
+  decode(
+    input: _m0.Reader | Uint8Array,
+    length?: number,
+  ): BroadcastTxsResponse {
+    const reader = input instanceof _m0.Reader ? input : new _m0.Reader(input)
+    let end = length === undefined ? reader.len : reader.pos + length
+    const message = { ...baseBroadcastTxsResponse } as BroadcastTxsResponse
+    message.txids = []
+    while (reader.pos < end) {
+      const tag = reader.uint32()
+      switch (tag >>> 3) {
+        case 1:
+          message.txids.push(reader.bytes())
+          break
+        default:
+          reader.skipType(tag & 7)
+          break
+      }
+    }
+    return message
+  },
+
+  fromJSON(object: any): BroadcastTxsResponse {
+    const message = { ...baseBroadcastTxsResponse } as BroadcastTxsResponse
+    message.txids = (object.txids ?? []).map((e: any) => bytesFromBase64(e))
+    return message
+  },
+
+  toJSON(message: BroadcastTxsResponse): unknown {
+    const obj: any = {}
+    if (message.txids) {
+      obj.txids = message.txids.map(e =>
+        base64FromBytes(e !== undefined ? e : new Uint8Array()),
+      )
+    } else {
+      obj.txids = []
+    }
+    return obj
+  },
+
+  fromPartial<I extends Exact<DeepPartial<BroadcastTxsResponse>, I>>(
+    object: I,
+  ): BroadcastTxsResponse {
+    const message = { ...baseBroadcastTxsResponse } as BroadcastTxsResponse
+    message.txids = object.txids?.map(e => e) || []
+    return message
+  },
+}
+
 const baseTx: object = {
   version: 0,
   lockTime: 0,
@@ -763,7 +906,7 @@ export const Tx = {
       (obj.txid = base64FromBytes(
         message.txid !== undefined ? message.txid : new Uint8Array(),
       ))
-    message.version !== undefined && (obj.version = message.version)
+    message.version !== undefined && (obj.version = Math.round(message.version))
     if (message.inputs) {
       obj.inputs = message.inputs.map(e => (e ? TxInput.toJSON(e) : undefined))
     } else {
@@ -776,7 +919,8 @@ export const Tx = {
     } else {
       obj.outputs = []
     }
-    message.lockTime !== undefined && (obj.lockTime = message.lockTime)
+    message.lockTime !== undefined &&
+      (obj.lockTime = Math.round(message.lockTime))
     message.slpTxData !== undefined &&
       (obj.slpTxData = message.slpTxData
         ? SlpTxData.toJSON(message.slpTxData)
@@ -926,7 +1070,8 @@ export const Utxo = {
       (obj.outpoint = message.outpoint
         ? OutPoint.toJSON(message.outpoint)
         : undefined)
-    message.blockHeight !== undefined && (obj.blockHeight = message.blockHeight)
+    message.blockHeight !== undefined &&
+      (obj.blockHeight = Math.round(message.blockHeight))
     message.isCoinbase !== undefined && (obj.isCoinbase = message.isCoinbase)
     message.value !== undefined &&
       (obj.value = (message.value || Long.ZERO).toString())
@@ -1154,8 +1299,8 @@ export const BlockInfo = {
       (obj.prevHash = base64FromBytes(
         message.prevHash !== undefined ? message.prevHash : new Uint8Array(),
       ))
-    message.height !== undefined && (obj.height = message.height)
-    message.nBits !== undefined && (obj.nBits = message.nBits)
+    message.height !== undefined && (obj.height = Math.round(message.height))
+    message.nBits !== undefined && (obj.nBits = Math.round(message.nBits))
     message.timestamp !== undefined &&
       (obj.timestamp = (message.timestamp || Long.ZERO).toString())
     message.blockSize !== undefined &&
@@ -1431,7 +1576,8 @@ export const TxHistoryPage = {
     } else {
       obj.txs = []
     }
-    message.numPages !== undefined && (obj.numPages = message.numPages)
+    message.numPages !== undefined &&
+      (obj.numPages = Math.round(message.numPages))
     return obj
   },
 
@@ -1866,7 +2012,8 @@ export const TxInput = {
       ))
     message.value !== undefined &&
       (obj.value = (message.value || Long.ZERO).toString())
-    message.sequenceNo !== undefined && (obj.sequenceNo = message.sequenceNo)
+    message.sequenceNo !== undefined &&
+      (obj.sequenceNo = Math.round(message.sequenceNo))
     message.slpBurn !== undefined &&
       (obj.slpBurn = message.slpBurn
         ? SlpBurn.toJSON(message.slpBurn)
@@ -2077,7 +2224,7 @@ export const BlockMetadata = {
 
   toJSON(message: BlockMetadata): unknown {
     const obj: any = {}
-    message.height !== undefined && (obj.height = message.height)
+    message.height !== undefined && (obj.height = Math.round(message.height))
     message.hash !== undefined &&
       (obj.hash = base64FromBytes(
         message.hash !== undefined ? message.hash : new Uint8Array(),
@@ -2158,7 +2305,7 @@ export const OutPoint = {
       (obj.txid = base64FromBytes(
         message.txid !== undefined ? message.txid : new Uint8Array(),
       ))
-    message.outIdx !== undefined && (obj.outIdx = message.outIdx)
+    message.outIdx !== undefined && (obj.outIdx = Math.round(message.outIdx))
     return obj
   },
 
@@ -2421,7 +2568,8 @@ export const SlpGenesisInfo = {
           ? message.tokenDocumentHash
           : new Uint8Array(),
       ))
-    message.decimals !== undefined && (obj.decimals = message.decimals)
+    message.decimals !== undefined &&
+      (obj.decimals = Math.round(message.decimals))
     return obj
   },
 
@@ -2500,7 +2648,7 @@ export const UtxoState = {
 
   toJSON(message: UtxoState): unknown {
     const obj: any = {}
-    message.height !== undefined && (obj.height = message.height)
+    message.height !== undefined && (obj.height = Math.round(message.height))
     message.isConfirmed !== undefined && (obj.isConfirmed = message.isConfirmed)
     message.state !== undefined &&
       (obj.state = utxoStateVariantToJSON(message.state))

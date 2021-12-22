@@ -25,9 +25,9 @@ export class ChronikClient {
       throw new Error("`url` cannot end with '/', got: " + url)
     }
     if (url.startsWith("https://")) {
-      this._wsUrl = "wss://" + url.substr("https://".length)
+      this._wsUrl = "wss://" + url.substring("https://".length)
     } else if (url.startsWith("http://")) {
-      this._wsUrl = "ws://" + url.substr("http://".length)
+      this._wsUrl = "ws://" + url.substring("http://".length)
     } else {
       throw new Error(
         "`url` must start with 'https://' or 'http://', got: " + url,
@@ -51,6 +51,27 @@ export class ChronikClient {
     const broadcastResponse = proto.BroadcastTxResponse.decode(data)
     return {
       txid: toHexRev(broadcastResponse.txid),
+    }
+  }
+
+  /** Broadcasts the `rawTxs` on the network, only if all of them are valid.
+   * If `skipSlpCheck` is false, it will be checked that the txs don't burn
+   * any SLP tokens before broadcasting.
+   */
+  public async broadcastTxs(
+    rawTxs: (Uint8Array | string)[],
+    skipSlpCheck = false,
+  ): Promise<{ txids: string[] }> {
+    const request = proto.BroadcastTxsRequest.encode({
+      rawTxs: rawTxs.map(rawTx =>
+        typeof rawTx === "string" ? fromHex(rawTx) : rawTx,
+      ),
+      skipSlpCheck,
+    }).finish()
+    const data = await _post(this._url, "/broadcast-txs", request)
+    const broadcastResponse = proto.BroadcastTxsResponse.decode(data)
+    return {
+      txids: broadcastResponse.txids.map(toHexRev),
     }
   }
 
