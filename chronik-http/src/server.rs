@@ -84,6 +84,10 @@ impl ChronikServer {
                 "/broadcast-tx",
                 routing::post(handle_broadcast_tx).on(MethodFilter::OPTIONS, handle_post_options),
             )
+            .route(
+                "/broadcast-txs",
+                routing::post(handle_broadcast_txs).on(MethodFilter::OPTIONS, handle_post_options),
+            )
             .route("/blocks/:start/:end", routing::get(handle_blocks))
             .route("/block/:hash_or_height", routing::get(handle_block))
             .route("/tx/:txid", routing::get(handle_tx))
@@ -128,6 +132,31 @@ async fn handle_broadcast_tx(
     let txid = slp_indexer.broadcast().broadcast_tx(&tx, check_slp)?;
     Ok(Protobuf(proto::BroadcastTxResponse {
         txid: txid.as_slice().to_vec(),
+    }))
+}
+
+async fn handle_broadcast_txs(
+    Protobuf(broadcast_request): Protobuf<proto::BroadcastTxsRequest>,
+    Extension(server): Extension<ChronikServer>,
+) -> Result<Protobuf<proto::BroadcastTxsResponse>, ReportError> {
+    let check_slp = !broadcast_request.skip_slp_check;
+    let slp_indexer = server.slp_indexer.read().await;
+    let broadcast = slp_indexer.broadcast();
+    let mut txs = Vec::new();
+    for raw_tx in broadcast_request.raw_txs {
+        let tx = UnhashedTx::deser(&mut raw_tx.into()).map_err(InvalidTxEncoding)?;
+        broadcast
+            .test_mempool_accept(&tx, check_slp)?
+            .map_err(Report::from)?;
+        txs.push(tx);
+    }
+    let mut txids = Vec::new();
+    for tx in txs {
+        let txid = slp_indexer.broadcast().broadcast_tx(&tx, check_slp)?;
+        txids.push(txid);
+    }
+    Ok(Protobuf(proto::BroadcastTxsResponse {
+        txids: txids.iter().map(|txid| txid.as_slice().to_vec()).collect(),
     }))
 }
 

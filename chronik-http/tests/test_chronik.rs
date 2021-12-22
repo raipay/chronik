@@ -3,8 +3,8 @@ use std::{ffi::OsString, str::FromStr, sync::Arc, time::Duration};
 use bitcoinsuite_bitcoind::instance::{BitcoindChain, BitcoindConf, BitcoindInstance};
 use bitcoinsuite_bitcoind_nng::{PubInterface, RpcInterface};
 use bitcoinsuite_core::{
-    AddressType, BitcoinCode, CashAddress, Hashed, Network, Script, Sha256d, ShaRmd160, TxOutput,
-    BCHREG,
+    lotus_txid, AddressType, BitcoinCode, CashAddress, Hashed, Network, Script, Sha256d, ShaRmd160,
+    TxOutput, BCHREG,
 };
 use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
 use bitcoinsuite_error::Result;
@@ -489,6 +489,86 @@ async fn test_server() -> Result<()> {
     assert_eq!(response.headers()[CONTENT_TYPE], CONTENT_TYPE_PROTOBUF);
     let proto_blocks_smaller = proto::Blocks::decode(response.bytes().await?)?;
     assert_eq!(proto_blocks_smaller.blocks, proto_blocks.blocks[10..=20]);
+
+    // Test atomic multi-tx broadcast
+    let utxo = utxos.pop().unwrap();
+    let leftover_value = utxo.output.value - 20_000;
+    let tx1 = build_tx(
+        utxo.outpoint.clone(),
+        &anyone1_script,
+        vec![
+            TxOutput {
+                value: 6_000,
+                script: burn_address.to_script(),
+            },
+            TxOutput {
+                value: leftover_value,
+                script: anyone2_script.to_p2sh(),
+            },
+        ],
+    );
+    let utxo = utxos.pop().unwrap();
+    let leftover_value = utxo.output.value - 20_000;
+    let mut tx2 = build_tx(
+        utxo.outpoint.clone(),
+        &anyone1_script,
+        vec![
+            TxOutput {
+                value: 25_000,
+                script: burn_address.to_script(),
+            },
+            TxOutput {
+                value: leftover_value,
+                script: anyone2_script.to_p2sh(),
+            },
+        ],
+    );
+    let response = client
+        .post(format!("{}{}", url, "/broadcast-txs"))
+        .header(CONTENT_TYPE, CONTENT_TYPE_PROTOBUF)
+        .body(
+            proto::BroadcastTxsRequest {
+                raw_txs: vec![tx1.ser().to_vec(), tx2.ser().to_vec()],
+                skip_slp_check: false,
+            }
+            .encode_to_vec(),
+        )
+        .send()
+        .await?;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    check_proto_error(
+        response,
+        "bitcoind-rejected-tx",
+        "Bitcoind rejected tx: bad-txns-in-belowout",
+        true,
+    )
+    .await?;
+    tx2.outputs[0].value = 10_000;
+    let response = client
+        .post(format!("{}{}", url, "/broadcast-txs"))
+        .header(CONTENT_TYPE, CONTENT_TYPE_PROTOBUF)
+        .body(
+            proto::BroadcastTxsRequest {
+                raw_txs: vec![tx1.ser().to_vec(), tx2.ser().to_vec()],
+                skip_slp_check: false,
+            }
+            .encode_to_vec(),
+        )
+        .send()
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[CONTENT_TYPE], CONTENT_TYPE_PROTOBUF);
+    assert_eq!(
+        proto::BroadcastTxsResponse::decode(response.bytes().await?)?,
+        proto::BroadcastTxsResponse {
+            txids: vec![
+                lotus_txid(&tx1).as_slice().to_vec(),
+                lotus_txid(&tx2).as_slice().to_vec(),
+            ],
+        },
+    );
+    slp_indexer.write().await.process_next_msg()?;
+    slp_indexer.write().await.process_next_msg()?;
 
     instance.cleanup()?;
 
