@@ -18,7 +18,10 @@ use bitcoinsuite_slp::{
 };
 use bitcoinsuite_test_utils::bin_folder;
 use bitcoinsuite_test_utils_blockchain::build_tx;
-use chronik_indexer::{subscribers::SubscribeMessage, SlpIndexer, UtxoState, UtxoStateVariant};
+use chronik_indexer::{
+    broadcast::BroadcastError, subscribers::SubscribeMessage, SlpIndexer, UtxoState,
+    UtxoStateVariant,
+};
 use chronik_rocksdb::{
     BlockStats, Db, IndexDb, IndexMemData, MempoolTxEntry, PayloadPrefix, ScriptPayload,
     ScriptTxsConf,
@@ -191,7 +194,14 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
             },
         ],
     );
+    slp_indexer.broadcast().test_mempool_accept(&tx1, true)??;
     let txid1 = slp_indexer.broadcast().broadcast_tx(&tx1, true)?;
+    assert_eq!(
+        slp_indexer.broadcast().test_mempool_accept(&tx1, true)?,
+        Err(BroadcastError::BitcoindRejectedTx(
+            "txn-already-in-mempool".to_string()
+        )),
+    );
     let mut rich_tx1 = RichTx {
         tx: tx1.clone().hashed(),
         txid: txid1.clone(),
@@ -316,6 +326,7 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
             },
         ],
     );
+    slp_indexer.broadcast().test_mempool_accept(&tx2, true)??;
     let txid2 = slp_indexer.broadcast().broadcast_tx(&tx2, true)?;
     let token_id = TokenId::new(txid2.clone());
     let slp_tx_data2 = SlpValidTxData {
@@ -477,6 +488,7 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
         ],
         lock_time: 0,
     };
+    slp_indexer.broadcast().test_mempool_accept(&tx3, true)??;
     let txid3 = slp_indexer.broadcast().broadcast_tx(&tx3, true)?;
     let slp_tx_data3 = SlpValidTxData {
         slp_tx_data: SlpTxData {

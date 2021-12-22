@@ -36,7 +36,10 @@ impl<'a> Broadcast<'a> {
         Broadcast { indexer }
     }
 
-    fn check_no_slp_burn(&self, tx: &UnhashedTx) -> Result<()> {
+    fn check_no_slp_burn(
+        &self,
+        tx: &UnhashedTx,
+    ) -> Result<std::result::Result<(), BroadcastError>> {
         let dummy_txid = Sha256d::default();
         let result = self
             .indexer
@@ -45,21 +48,21 @@ impl<'a> Broadcast<'a> {
         match result {
             Ok(valid_tx_data) => {
                 if valid_tx_data.slp_burns.iter().any(Option::is_some) {
-                    return Err(InvalidSlpBurns(SlpBurns(valid_tx_data.slp_burns)).into());
+                    return Ok(Err(InvalidSlpBurns(SlpBurns(valid_tx_data.slp_burns))));
                 }
             }
             Err(slp_error) => {
                 if !is_ignored_error(&slp_error) {
-                    return Err(InvalidSlpTx(slp_error).into());
+                    return Ok(Err(InvalidSlpTx(slp_error)));
                 }
             }
         }
-        Ok(())
+        Ok(Ok(()))
     }
 
     pub fn broadcast_tx(&self, tx: &UnhashedTx, check_slp: bool) -> Result<Sha256d> {
         if check_slp {
-            self.check_no_slp_burn(tx)?;
+            self.check_no_slp_burn(tx)??;
         }
         let raw_tx = tx.ser();
         let result = self
@@ -73,6 +76,42 @@ impl<'a> Broadcast<'a> {
         match report.downcast::<BitcoindError>()? {
             BitcoindError::JsonRpc(rpc_message) => Err(BitcoindRejectedTx(rpc_message).into()),
             bitcoind_error => Err(bitcoind_error.into()),
+        }
+    }
+
+    pub fn test_mempool_accept(
+        &self,
+        tx: &UnhashedTx,
+        check_slp: bool,
+    ) -> Result<std::result::Result<(), BroadcastError>> {
+        if check_slp {
+            let result = self.check_no_slp_burn(tx)?;
+            if result.is_err() {
+                return Ok(result);
+            }
+        }
+        let raw_tx = tx.ser();
+        let result = self
+            .indexer
+            .bitcoind
+            .cmd_json("testmempoolaccept", &[&format!("[\"{}\"]", raw_tx.hex())]);
+        match result {
+            Ok(json_result) => {
+                let tx_result = &json_result[0];
+                if !tx_result["allowed"].as_bool().expect("No 'allowed' field") {
+                    return Ok(Err(BroadcastError::BitcoindRejectedTx(
+                        tx_result["reject-reason"]
+                            .as_str()
+                            .expect("No 'reject-reason' field")
+                            .to_string(),
+                    )));
+                }
+                Ok(Ok(()))
+            }
+            Err(report) => match report.downcast::<BitcoindError>()? {
+                BitcoindError::JsonRpc(rpc_message) => Ok(Err(BitcoindRejectedTx(rpc_message))),
+                bitcoind_error => Err(bitcoind_error.into()),
+            },
         }
     }
 }

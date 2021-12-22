@@ -19,6 +19,15 @@ message BroadcastTxResponse {
     bytes txid = 1;
 }
 
+message BroadcastTxsRequest {
+    repeated bytes raw_txs = 1;
+    bool skip_slp_check = 2;
+}
+
+message BroadcastTxsResponse {
+    repeated bytes txids = 1;
+}
+
 message Tx {
     bytes txid = 1;
     int32 version = 2;
