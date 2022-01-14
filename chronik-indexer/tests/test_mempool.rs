@@ -1099,7 +1099,11 @@ fn check_rich_utxos<const M: usize>(
                         token_id: slp_data.token_id,
                         tx_type: slp_data.slp_tx_type.tx_type_variant(),
                         token_type: slp_data.slp_token_type,
-                        token: slp_data.output_tokens[out_idx as usize],
+                        token: slp_data
+                            .output_tokens
+                            .get(out_idx as usize)
+                            .cloned()
+                            .unwrap_or_default(),
                         group_token_id: slp_data.group_token_id,
                     })
                 }),

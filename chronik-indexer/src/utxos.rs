@@ -102,7 +102,11 @@ impl<'a> Utxos<'a> {
                                 token_id: slp_data.token_id,
                                 tx_type: slp_data.slp_tx_type.tx_type_variant(),
                                 token_type: slp_data.slp_token_type,
-                                token: slp_data.output_tokens[out_idx],
+                                token: slp_data
+                                    .output_tokens
+                                    .get(out_idx)
+                                    .cloned()
+                                    .unwrap_or_default(),
                                 group_token_id: slp_data.group_token_id,
                             })
                         });
@@ -140,7 +144,12 @@ impl<'a> Utxos<'a> {
                         token_id: slp_data.slp_tx_data.token_id.clone(),
                         tx_type: slp_data.slp_tx_data.slp_tx_type.tx_type_variant(),
                         token_type: slp_data.slp_tx_data.slp_token_type,
-                        token: slp_data.slp_tx_data.output_tokens[out_idx],
+                        token: slp_data
+                            .slp_tx_data
+                            .output_tokens
+                            .get(out_idx)
+                            .cloned()
+                            .unwrap_or_default(),
                         group_token_id: slp_data.slp_tx_data.group_token_id.clone(),
                     })
                 });
