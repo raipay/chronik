@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 
-use bitcoinsuite_core::{Bytes, OutPoint, Sha256d, TxOutput, UnhashedTx};
+use bitcoinsuite_core::{Bytes, Coin, OutPoint, Sha256d, UnhashedTx};
 use bitcoinsuite_error::{ErrorMeta, Result};
 use thiserror::Error;
 
@@ -17,7 +17,7 @@ pub struct MempoolData {
 #[derive(Debug, PartialEq, Eq, Default)]
 pub struct MempoolTxEntry {
     pub tx: UnhashedTx,
-    pub spent_outputs: Vec<TxOutput>,
+    pub spent_coins: Vec<Coin>,
     pub time_first_seen: i64,
 }
 
@@ -75,7 +75,7 @@ impl MempoolData {
         &mut self,
         txid: Sha256d,
         tx: UnhashedTx,
-        spent_outputs: Vec<TxOutput>,
+        spent_coins: Vec<Coin>,
         time_first_seen: i64,
     ) -> Result<()> {
         for (out_idx, output) in tx.outputs.iter().enumerate() {
@@ -109,8 +109,8 @@ impl MempoolData {
                 }
             }
         }
-        for (input_idx, (input, spent_output)) in tx.inputs.iter().zip(&spent_outputs).enumerate() {
-            for script_payload in script_payloads(&spent_output.script) {
+        for (input_idx, (input, spent_coin)) in tx.inputs.iter().zip(&spent_coins).enumerate() {
+            for script_payload in script_payloads(&spent_coin.tx_output.script) {
                 let script_payload = script_payload.payload.into_vec();
                 let script_payload = Bytes::from_bytes(script_payload);
                 {
@@ -150,7 +150,7 @@ impl MempoolData {
         }
         let entry = MempoolTxEntry {
             tx,
-            spent_outputs,
+            spent_coins,
             time_first_seen,
         };
         if self.txs.insert(txid.clone(), entry).is_some() {
@@ -162,14 +162,14 @@ impl MempoolData {
     pub fn delete_mempool_tx(&mut self, txid: &Sha256d, mode: MempoolDeleteMode) -> Result<()> {
         let MempoolTxEntry {
             tx,
-            spent_outputs,
+            spent_coins,
             time_first_seen,
         } = match self.txs.remove(txid) {
             Some(entry) => entry,
             None => return Err(NoSuchTx(txid.clone()).into()),
         };
-        for (input_idx, (input, spent_output)) in tx.inputs.iter().zip(&spent_outputs).enumerate() {
-            for script_payload in script_payloads(&spent_output.script) {
+        for (input_idx, (input, spent_coin)) in tx.inputs.iter().zip(&spent_coins).enumerate() {
+            for script_payload in script_payloads(&spent_coin.tx_output.script) {
                 let script_payload = script_payload.payload.into_vec();
                 let script_payload = Bytes::from_bytes(script_payload);
                 if let Some(txs) = self.script_txs.get_mut(&script_payload) {
@@ -293,7 +293,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     use bitcoinsuite_core::{
-        ecc::PubKey, OutPoint, Script, Sha256d, ShaRmd160, TxInput, TxOutput, UnhashedTx,
+        ecc::PubKey, Coin, OutPoint, Script, Sha256d, ShaRmd160, TxInput, TxOutput, UnhashedTx,
     };
     use bitcoinsuite_error::Result;
     use pretty_assertions::assert_eq;
@@ -491,7 +491,7 @@ mod tests {
             mempool.txs.get(txid),
             Some(&MempoolTxEntry {
                 tx: expectd_tx.clone(),
-                spent_outputs: make_spents(spent_scripts),
+                spent_coins: make_spents(spent_scripts),
                 time_first_seen,
             }),
         );
@@ -610,12 +610,16 @@ mod tests {
         Sha256d::new(hash)
     }
 
-    fn make_spents(scripts: &[Script]) -> Vec<TxOutput> {
+    fn make_spents(scripts: &[Script]) -> Vec<Coin> {
         scripts
             .iter()
-            .map(|script| TxOutput {
-                value: 0,
-                script: script.clone(),
+            .map(|script| Coin {
+                tx_output: TxOutput {
+                    value: 0,
+                    script: script.clone(),
+                },
+                height: None,
+                is_coinbase: false,
             })
             .collect()
     }

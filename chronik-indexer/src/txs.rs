@@ -55,27 +55,18 @@ impl<'a> Txs<'a> {
                 (slp_burns, slp_error_msg)
             }
         };
-        return Ok(RichTx {
+        Ok(RichTx {
             tx,
             txid: txid.clone(),
             block: None,
             slp_tx_data: slp_tx_data.map(|slp_tx_data| slp_tx_data.slp_tx_data.clone().into()),
-            spent_coins: Some(
-                entry
-                    .spent_outputs
-                    .iter()
-                    .map(|tx_output| Coin {
-                        tx_output: tx_output.clone(),
-                        ..Default::default()
-                    })
-                    .collect(),
-            ),
+            spent_coins: Some(entry.spent_coins.clone()),
             spends,
             slp_burns,
             slp_error_msg,
             time_first_seen: entry.time_first_seen,
             network: self.indexer.network,
-        });
+        })
     }
 
     pub(crate) fn rich_block_tx(&self, tx_num: TxNum, block_tx: &BlockTx) -> Result<RichTx> {

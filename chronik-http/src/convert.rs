@@ -53,11 +53,11 @@ pub fn rich_tx_to_proto(rich_tx: RichTx) -> proto::Tx {
                 input_script: input.tx_input.script.bytecode().to_vec(),
                 output_script: input
                     .spent_coin
-                    .map(|output| output.tx_output.script.bytecode().to_vec())
+                    .map(|coin| coin.tx_output.script.bytecode().to_vec())
                     .unwrap_or_default(),
                 value: input
                     .spent_coin
-                    .map(|output| output.tx_output.value)
+                    .map(|coin| coin.tx_output.value)
                     .unwrap_or_default(),
                 sequence_no: input.tx_input.sequence.as_u32(),
                 slp_burn: input.slp_burn.map(|slp_burn| proto::SlpBurn {

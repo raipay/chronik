@@ -66,7 +66,7 @@ async fn test_mempool() -> Result<()> {
         Network::XPI,
         Arc::new(EccSecp256k1::default()),
     )?;
-    bitcoind.cmd_string("setmocktime", &["2100000000"])?;
+    bitcoind.cmd_string("setmocktime", &["2000000000"])?;
     test_index_mempool(&mut slp_indexer, bitcoind).await?;
     instance.cleanup()?;
     Ok(())
@@ -102,6 +102,8 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
     bitcoind.cmd_json("generatetoaddress", &["100", burn_address.as_str()])?;
     while !slp_indexer.catchup_step()? {}
     slp_indexer.leave_catchup()?;
+
+    bitcoind.cmd_string("setmocktime", &["2100000000"])?;
 
     let dt_timeout = Duration::from_secs(3);
     let mut receiver = slp_indexer.subscribers_mut().subscribe(&ScriptPayload {
@@ -212,7 +214,8 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
                 value,
                 script: anyone_script.to_p2sh(),
             },
-            ..Default::default()
+            height: Some(10),
+            is_coinbase: true,
         }]),
         spends: vec![None, None],
         slp_burns: vec![None],
@@ -229,10 +232,7 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
         slp_indexer.db_mempool().tx(&txid1),
         Some(&MempoolTxEntry {
             tx: tx1.clone(),
-            spent_outputs: vec![TxOutput {
-                value,
-                script: anyone_script.to_p2sh(),
-            }],
+            spent_coins: rich_tx1.spent_coins.clone().unwrap(),
             time_first_seen: 2_100_000_000,
         }),
     );
@@ -350,7 +350,8 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
                 value,
                 script: anyone_script.to_p2sh(),
             },
-            ..Default::default()
+            height: Some(9),
+            is_coinbase: true,
         }]),
         spends: vec![None, None],
         slp_burns: vec![None],
@@ -367,35 +368,7 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
         slp_indexer.db_mempool().tx(&txid2),
         Some(&MempoolTxEntry {
             tx: tx2.clone(),
-            spent_outputs: vec![TxOutput {
-                value,
-                script: anyone_script.to_p2sh(),
-            }],
-            time_first_seen: 2_100_000_001,
-        }),
-    );
-    assert_eq!(
-        slp_indexer.db_mempool_slp().slp_tx_data(&txid2),
-        Some(&SlpValidTxData {
-            slp_tx_data: SlpTxData {
-                input_tokens: vec![SlpToken::EMPTY],
-                output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(100)],
-                slp_token_type: SlpTokenType::Fungible,
-                slp_tx_type: SlpTxType::Genesis(SlpGenesisInfo::default().into()),
-                token_id: token_id.clone(),
-                group_token_id: None,
-            },
-            slp_burns: vec![None],
-        })
-    );
-    assert_eq!(
-        slp_indexer.db_mempool().tx(&txid2),
-        Some(&MempoolTxEntry {
-            tx: tx2.clone(),
-            spent_outputs: vec![TxOutput {
-                value,
-                script: anyone_script.to_p2sh(),
-            }],
+            spent_coins: rich_tx2.spent_coins.clone().unwrap(),
             time_first_seen: 2_100_000_001,
         }),
     );
@@ -512,21 +485,24 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
                     value,
                     script: anyone_script.to_p2sh(),
                 },
-                ..Default::default()
+                height: Some(8),
+                is_coinbase: true,
             },
             Coin {
                 tx_output: TxOutput {
                     value: leftover_value,
                     script: anyone_script.to_p2sh(),
                 },
-                ..Default::default()
+                height: None,
+                is_coinbase: false,
             },
             Coin {
                 tx_output: TxOutput {
                     value: leftover_value,
                     script: anyone_script.to_p2sh(),
                 },
-                ..Default::default()
+                height: None,
+                is_coinbase: false,
             },
         ]),
         spends: vec![None, None],
@@ -544,20 +520,7 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
         slp_indexer.db_mempool().tx(&txid3),
         Some(&MempoolTxEntry {
             tx: tx3.clone(),
-            spent_outputs: vec![
-                TxOutput {
-                    value,
-                    script: anyone_script.to_p2sh(),
-                },
-                TxOutput {
-                    value: leftover_value,
-                    script: anyone_script.to_p2sh(),
-                },
-                TxOutput {
-                    value: leftover_value,
-                    script: anyone_script.to_p2sh(),
-                },
-            ],
+            spent_coins: rich_tx3.spent_coins.clone().unwrap_or_default(),
             time_first_seen: 2_100_000_002,
         }),
     );
@@ -880,6 +843,9 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
         spent_coins[2].height = Some(112);
     }
     rich_tx3.time_first_seen = 0; // tx not first seen in mempool
+    let spent_coins = rich_tx3.spent_coins.as_mut().unwrap();
+    spent_coins[1].height = Some(111);
+    spent_coins[2].height = Some(112);
     assert_eq!(rich_tx3.timestamp(), block2.header.timestamp);
     assert_eq!(slp_indexer.txs().rich_tx_by_txid(&txid3)?, None);
     assert_eq!(

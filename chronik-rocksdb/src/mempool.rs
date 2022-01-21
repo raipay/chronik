@@ -29,12 +29,8 @@ impl<'a> MempoolWriter<'a> {
     pub fn insert_mempool_tx(&mut self, txid: Sha256d, entry: MempoolTxEntry) -> Result<()> {
         self.mempool_slp
             .insert_mempool_tx(self.db, &txid, &entry.tx)?;
-        self.mempool.insert_mempool_tx(
-            txid,
-            entry.tx,
-            entry.spent_outputs,
-            entry.time_first_seen,
-        )?;
+        self.mempool
+            .insert_mempool_tx(txid, entry.tx, entry.spent_coins, entry.time_first_seen)?;
         Ok(())
     }
 
@@ -107,7 +103,7 @@ impl<'a> MempoolWriter<'a> {
 mod tests {
     use std::collections::{HashMap, HashSet};
 
-    use bitcoinsuite_core::{OutPoint, Script, Sha256d, TxInput, TxOutput, UnhashedTx};
+    use bitcoinsuite_core::{Coin, OutPoint, Script, Sha256d, TxInput, TxOutput, UnhashedTx};
     use bitcoinsuite_error::Result;
     use bitcoinsuite_slp::{
         genesis_opreturn, send_opreturn, SlpAmount, SlpGenesisInfo, SlpToken, SlpTokenType,
@@ -211,7 +207,7 @@ mod tests {
                         txid.clone(),
                         MempoolTxEntry {
                             tx: tx.clone(),
-                            spent_outputs: vec![TxOutput::default(); tx.inputs.len()],
+                            spent_coins: vec![Coin::default(); tx.inputs.len()],
                             time_first_seen: 0,
                         },
                     )

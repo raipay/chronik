@@ -166,7 +166,8 @@ async fn test_index_slp(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> 
                 value,
                 script: anyone_script.to_p2sh(),
             },
-            ..Default::default()
+            height: Some(10),
+            is_coinbase: true,
         }]),
         spends: vec![None, None, None],
         slp_burns: vec![None],

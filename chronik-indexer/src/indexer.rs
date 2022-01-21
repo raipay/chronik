@@ -6,7 +6,7 @@ use std::{
 use bitcoinsuite_bitcoind::cli::BitcoinCli;
 use bitcoinsuite_bitcoind_nng::{BlockTx, MempoolTx, Message, PubInterface, RpcInterface};
 use bitcoinsuite_core::{
-    ecc::Ecc, BitcoinCode, Bytes, Hashed, Network, Script, Sha256d, TxOutput, UnhashedTx,
+    ecc::Ecc, BitcoinCode, Bytes, Hashed, Network, Script, Sha256d, UnhashedTx,
 };
 use bitcoinsuite_error::{ErrorMeta, Result};
 use thiserror::Error;
@@ -164,16 +164,10 @@ impl SlpIndexer {
             .map(|mempool_tx| {
                 let mut raw_tx = Bytes::from_bytes(mempool_tx.tx.raw);
                 let tx = UnhashedTx::deser(&mut raw_tx)?;
-                let spent_outputs = mempool_tx
-                    .tx
-                    .spent_coins
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|coin| coin.tx_output)
-                    .collect::<Vec<_>>();
+                let spent_coins = mempool_tx.tx.spent_coins.unwrap_or_default();
                 let entry = MempoolTxEntry {
                     tx,
-                    spent_outputs,
+                    spent_coins,
                     time_first_seen: mempool_tx.time,
                 };
                 Ok((mempool_tx.tx.txid, entry))
@@ -359,26 +353,18 @@ impl SlpIndexer {
         let nng_tx = mempool_tx.tx;
         let mut raw_tx = Bytes::from_bytes(nng_tx.raw);
         let tx = UnhashedTx::deser(&mut raw_tx)?;
-        let spent_outputs = nng_tx
-            .spent_coins
-            .unwrap_or_default()
-            .into_iter()
-            .map(|output| TxOutput {
-                value: output.tx_output.value,
-                script: output.tx_output.script,
-            })
-            .collect::<Vec<_>>();
+        let spent_coins = nng_tx.spent_coins.unwrap_or_default();
         Self::broadcast_msg(
             &mut self.subscribers,
             SubscribeMessage::AddedToMempool(nng_tx.txid.clone()),
-            spent_outputs
+            spent_coins
                 .iter()
-                .map(|spent_output| &spent_output.script),
+                .map(|spent_output| &spent_output.tx_output.script),
             tx.outputs.iter().map(|spent_output| &spent_output.script),
         );
         let entry = MempoolTxEntry {
             tx,
-            spent_outputs,
+            spent_coins,
             time_first_seen: mempool_tx.time,
         };
         self.db
@@ -391,13 +377,10 @@ impl SlpIndexer {
             Self::broadcast_msg(
                 &mut self.subscribers,
                 SubscribeMessage::RemovedFromMempool(txid.clone()),
-                tx.spent_outputs
+                tx.spent_coins
                     .iter()
-                    .map(|spent_output| &spent_output.script),
-                tx.tx
-                    .outputs
-                    .iter()
-                    .map(|spent_output| &spent_output.script),
+                    .map(|spent_coin| &spent_coin.tx_output.script),
+                tx.tx.outputs.iter().map(|output| &output.script),
             );
         }
         self.db.remove_mempool_tx(&mut self.data, &txid)?;
