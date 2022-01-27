@@ -17,6 +17,7 @@ bitcoinsuite-test-utils = { path = "../../bitcoinsuite/bitcoinsuite-test-utils" 
 tokio = { version = "1.14", features = ["full"] }
 
 hex = "0.4"
+json = "0.12"
 
 # For parallelizing tx processing
 rayon = "1.5"

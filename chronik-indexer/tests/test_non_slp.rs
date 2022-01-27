@@ -21,8 +21,8 @@ use chronik_rocksdb::{
 use pretty_assertions::assert_eq;
 use tempdir::TempDir;
 
-#[test]
-fn test_non_slp() -> Result<()> {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_non_slp() -> Result<()> {
     bitcoinsuite_error::install()?;
     let dir = TempDir::new("slp-indexer-test")?;
     let pub_url = format!("ipc://{}", dir.path().join("pub.pipe").to_string_lossy());
@@ -50,16 +50,16 @@ fn test_non_slp() -> Result<()> {
     let cache = IndexMemData::new(10);
     let mut slp_indexer = SlpIndexer::new(
         db,
-        bitcoin_cli.clone(),
+        instance.rpc_client().clone(),
         rpc_interface,
         pub_interface,
         cache,
         Network::XPI,
         Arc::new(EccSecp256k1::default()),
     )?;
-    test_index_genesis(&mut slp_indexer, bitcoin_cli)?;
-    test_get_out_of_ibd(&mut slp_indexer, bitcoin_cli)?;
-    test_reorg_empty(&mut slp_indexer, bitcoin_cli)?;
+    test_index_genesis(&mut slp_indexer, bitcoin_cli).await?;
+    test_get_out_of_ibd(&mut slp_indexer, bitcoin_cli).await?;
+    test_reorg_empty(&mut slp_indexer, bitcoin_cli).await?;
     instance.cleanup()?;
     Ok(())
 }
@@ -101,15 +101,15 @@ fn check_tx_indexed(
     Ok(())
 }
 
-fn test_index_genesis(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Result<()> {
+async fn test_index_genesis(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Result<()> {
     let info = bitcoind.cmd_json("getblockchaininfo", &[])?;
     assert!(info["initialblockdownload"].as_bool().unwrap());
-    assert_eq!(info["blocks"], 0);
+    assert_eq!(info["blocks"], 0i32);
     let db_blocks = slp_indexer.db().blocks()?;
     assert_eq!(db_blocks.height()?, -1);
     assert_eq!(db_blocks.tip()?, None);
     // index genesis block
-    assert!(!slp_indexer.catchup_step()?);
+    assert!(!slp_indexer.catchup_step().await?);
     let db_blocks = slp_indexer.db().blocks()?;
     assert_eq!(db_blocks.height()?, 0);
     let tip = db_blocks.tip()?.unwrap();
@@ -179,7 +179,7 @@ fn test_index_genesis(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Re
     Ok(())
 }
 
-fn test_get_out_of_ibd(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Result<()> {
+async fn test_get_out_of_ibd(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Result<()> {
     let prev_info = bitcoind.cmd_json("getblockchaininfo", &[])?;
     // generate block delayed
     let gen_handle = std::thread::spawn({
@@ -193,7 +193,7 @@ fn test_get_out_of_ibd(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> R
         }
     });
     // will wait for IBD and then index
-    assert!(!slp_indexer.catchup_step()?);
+    assert!(!slp_indexer.catchup_step().await?);
     gen_handle.join().unwrap();
     let cur_info = bitcoind.cmd_json("getblockchaininfo", &[])?;
     let tip = slp_indexer.db().blocks()?.tip()?.unwrap();
@@ -245,13 +245,13 @@ fn test_get_out_of_ibd(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> R
     );
 
     // catchup finished
-    assert!(slp_indexer.catchup_step()?);
+    assert!(slp_indexer.catchup_step().await?);
     slp_indexer.leave_catchup()?;
 
     Ok(())
 }
 
-fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Result<()> {
+async fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Result<()> {
     let anyone_payload = ShaRmd160::digest(Bytes::from_bytes(vec![0x51]));
     let anyone_script = Script::p2sh(&anyone_payload);
     let anyone_payload = anyone_payload.as_slice();

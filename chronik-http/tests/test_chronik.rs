@@ -52,7 +52,7 @@ async fn test_server() -> Result<()> {
     let cache = IndexMemData::new(10);
     let mut slp_indexer = SlpIndexer::new(
         db,
-        bitcoind.clone(),
+        instance.rpc_client().clone(),
         rpc_interface,
         pub_interface,
         cache,
@@ -69,7 +69,7 @@ async fn test_server() -> Result<()> {
     let burn_address = CashAddress::from_hash(BCHREG, AddressType::P2SH, ShaRmd160::new([0; 20]));
     bitcoind.cmd_json("generatetoaddress", &["100", burn_address.as_str()])?;
 
-    while !slp_indexer.catchup_step()? {}
+    while !slp_indexer.catchup_step().await? {}
     slp_indexer.leave_catchup()?;
 
     let mut utxos = slp_indexer.utxos().utxos(&ScriptPayload {

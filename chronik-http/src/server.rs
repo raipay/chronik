@@ -129,7 +129,7 @@ async fn handle_broadcast_tx(
     let tx = UnhashedTx::deser(&mut broadcast_request.raw_tx.into()).map_err(InvalidTxEncoding)?;
     let slp_indexer = server.slp_indexer.read().await;
     let check_slp = !broadcast_request.skip_slp_check;
-    let txid = slp_indexer.broadcast().broadcast_tx(&tx, check_slp)?;
+    let txid = slp_indexer.broadcast().broadcast_tx(&tx, check_slp).await?;
     Ok(Protobuf(proto::BroadcastTxResponse {
         txid: txid.as_slice().to_vec(),
     }))
@@ -146,13 +146,14 @@ async fn handle_broadcast_txs(
     for raw_tx in broadcast_request.raw_txs {
         let tx = UnhashedTx::deser(&mut raw_tx.into()).map_err(InvalidTxEncoding)?;
         broadcast
-            .test_mempool_accept(&tx, check_slp)?
+            .test_mempool_accept(&tx, check_slp)
+            .await?
             .map_err(Report::from)?;
         txs.push(tx);
     }
     let mut txids = Vec::new();
     for tx in txs {
-        let txid = slp_indexer.broadcast().broadcast_tx(&tx, check_slp)?;
+        let txid = slp_indexer.broadcast().broadcast_tx(&tx, check_slp).await?;
         txids.push(txid);
     }
     Ok(Protobuf(proto::BroadcastTxsResponse {

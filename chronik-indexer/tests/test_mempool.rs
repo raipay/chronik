@@ -59,7 +59,7 @@ async fn test_mempool() -> Result<()> {
     let cache = IndexMemData::new(10);
     let mut slp_indexer = SlpIndexer::new(
         db,
-        bitcoind.clone(),
+        instance.rpc_client().clone(),
         rpc_interface,
         pub_interface,
         cache,
@@ -87,7 +87,7 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
     );
 
     bitcoind.cmd_json("generatetoaddress", &["10", anyone_address.as_str()])?;
-    while !slp_indexer.catchup_step()? {}
+    while !slp_indexer.catchup_step().await? {}
     assert_eq!(
         slp_indexer
             .script_history()
@@ -100,7 +100,7 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
     let burn_address2 =
         CashAddress::from_hash(BCHREG, AddressType::P2SH, ShaRmd160::new(burn_hash));
     bitcoind.cmd_json("generatetoaddress", &["100", burn_address.as_str()])?;
-    while !slp_indexer.catchup_step()? {}
+    while !slp_indexer.catchup_step().await? {}
     slp_indexer.leave_catchup()?;
 
     bitcoind.cmd_string("setmocktime", &["2100000000"])?;
@@ -196,10 +196,16 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
             },
         ],
     );
-    slp_indexer.broadcast().test_mempool_accept(&tx1, true)??;
-    let txid1 = slp_indexer.broadcast().broadcast_tx(&tx1, true)?;
+    slp_indexer
+        .broadcast()
+        .test_mempool_accept(&tx1, true)
+        .await??;
+    let txid1 = slp_indexer.broadcast().broadcast_tx(&tx1, true).await?;
     assert_eq!(
-        slp_indexer.broadcast().test_mempool_accept(&tx1, true)?,
+        slp_indexer
+            .broadcast()
+            .test_mempool_accept(&tx1, true)
+            .await?,
         Err(BroadcastError::BitcoindRejectedTx(
             "txn-already-in-mempool".to_string()
         )),
@@ -326,8 +332,11 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
             },
         ],
     );
-    slp_indexer.broadcast().test_mempool_accept(&tx2, true)??;
-    let txid2 = slp_indexer.broadcast().broadcast_tx(&tx2, true)?;
+    slp_indexer
+        .broadcast()
+        .test_mempool_accept(&tx2, true)
+        .await??;
+    let txid2 = slp_indexer.broadcast().broadcast_tx(&tx2, true).await?;
     let token_id = TokenId::new(txid2.clone());
     let slp_tx_data2 = SlpValidTxData {
         slp_tx_data: SlpTxData {
@@ -461,8 +470,11 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
         ],
         lock_time: 0,
     };
-    slp_indexer.broadcast().test_mempool_accept(&tx3, true)??;
-    let txid3 = slp_indexer.broadcast().broadcast_tx(&tx3, true)?;
+    slp_indexer
+        .broadcast()
+        .test_mempool_accept(&tx3, true)
+        .await??;
+    let txid3 = slp_indexer.broadcast().broadcast_tx(&tx3, true).await?;
     let slp_tx_data3 = SlpValidTxData {
         slp_tx_data: SlpTxData {
             input_tokens: vec![SlpToken::EMPTY, SlpToken::EMPTY, SlpToken::amount(100)],

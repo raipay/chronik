@@ -53,7 +53,7 @@ async fn test_slp() -> Result<()> {
     let cache = IndexMemData::new(10);
     let mut slp_indexer = SlpIndexer::new(
         db,
-        bitcoind.clone(),
+        instance.rpc_client().clone(),
         rpc_interface,
         pub_interface,
         cache,
@@ -77,7 +77,7 @@ async fn test_index_slp(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> 
 
     let burn_address = CashAddress::from_hash(BCHREG, AddressType::P2SH, ShaRmd160::new([0; 20]));
     bitcoind.cmd_json("generatetoaddress", &["100", burn_address.as_str()])?;
-    while !slp_indexer.catchup_step()? {}
+    while !slp_indexer.catchup_step().await? {}
     slp_indexer.leave_catchup()?;
 
     let utxo_entries = slp_indexer.db().utxos()?.utxos(P2SH, anyone_slice)?;
@@ -116,7 +116,11 @@ async fn test_index_slp(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> 
             ),
         }],
     );
-    let slp_error = slp_indexer.broadcast().broadcast_tx(&tx, true).unwrap_err();
+    let slp_error = slp_indexer
+        .broadcast()
+        .broadcast_tx(&tx, true)
+        .await
+        .unwrap_err();
     let slp_error = slp_error.downcast::<BroadcastError>()?;
     assert_eq!(
         slp_error,
@@ -146,7 +150,7 @@ async fn test_index_slp(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> 
             },
         ],
     );
-    let txid1 = slp_indexer.broadcast().broadcast_tx(&tx1, true)?;
+    let txid1 = slp_indexer.broadcast().broadcast_tx(&tx1, true).await?;
     let token_id1 = TokenId::new(txid1.clone());
     slp_indexer.process_next_msg()?;
     let rich_tx1 = RichTx {
@@ -198,7 +202,7 @@ async fn test_index_slp(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> 
             },
         ],
     );
-    let txid2 = slp_indexer.broadcast().broadcast_tx(&tx2, true)?;
+    let txid2 = slp_indexer.broadcast().broadcast_tx(&tx2, true).await?;
     let token_id2 = TokenId::new(txid2.clone());
     slp_indexer.process_next_msg()?;
 
@@ -235,6 +239,7 @@ async fn test_index_slp(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> 
     let slp_error = slp_indexer
         .broadcast()
         .broadcast_tx(&tx_burn, true)
+        .await
         .unwrap_err();
     let slp_error = slp_error.downcast::<BroadcastError>()?;
     assert_eq!(
@@ -271,13 +276,12 @@ async fn test_index_slp(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> 
     let broadcast_error = slp_indexer
         .broadcast()
         .broadcast_tx(&tx_burn, false)
+        .await
         .unwrap_err();
     let broadcast_error = broadcast_error.downcast::<BroadcastError>()?;
     assert_eq!(
         broadcast_error,
-        BroadcastError::BitcoindRejectedTx(
-            "error code: -26\nerror message:\nabsurdly-high-fee, 779970000 > 2460000\n".to_string()
-        ),
+        BroadcastError::BitcoindRejectedTx("absurdly-high-fee, 779970000 > 2460000".to_string()),
     );
 
     Ok(())

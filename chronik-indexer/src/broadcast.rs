@@ -60,7 +60,7 @@ impl<'a> Broadcast<'a> {
         Ok(Ok(()))
     }
 
-    pub fn broadcast_tx(&self, tx: &UnhashedTx, check_slp: bool) -> Result<Sha256d> {
+    pub async fn broadcast_tx(&self, tx: &UnhashedTx, check_slp: bool) -> Result<Sha256d> {
         if check_slp {
             self.check_no_slp_burn(tx)??;
         }
@@ -68,18 +68,19 @@ impl<'a> Broadcast<'a> {
         let result = self
             .indexer
             .bitcoind
-            .cmd_string("sendrawtransaction", &[&raw_tx.hex()]);
+            .cmd_text("sendrawtransaction", &[raw_tx.hex().into()])
+            .await;
         let report = match result {
             Ok(txid_hex) => return Ok(Sha256d::from_hex_be(&txid_hex)?),
             Err(report) => report,
         };
         match report.downcast::<BitcoindError>()? {
-            BitcoindError::JsonRpc(rpc_message) => Err(BitcoindRejectedTx(rpc_message).into()),
+            BitcoindError::JsonRpcCode { message, .. } => Err(BitcoindRejectedTx(message).into()),
             bitcoind_error => Err(bitcoind_error.into()),
         }
     }
 
-    pub fn test_mempool_accept(
+    pub async fn test_mempool_accept(
         &self,
         tx: &UnhashedTx,
         check_slp: bool,
@@ -94,7 +95,8 @@ impl<'a> Broadcast<'a> {
         let result = self
             .indexer
             .bitcoind
-            .cmd_json("testmempoolaccept", &[&format!("[\"{}\"]", raw_tx.hex())]);
+            .cmd_json("testmempoolaccept", &[json::array![raw_tx.hex()]])
+            .await;
         match result {
             Ok(json_result) => {
                 let tx_result = &json_result[0];
@@ -109,7 +111,7 @@ impl<'a> Broadcast<'a> {
                 Ok(Ok(()))
             }
             Err(report) => match report.downcast::<BitcoindError>()? {
-                BitcoindError::JsonRpc(rpc_message) => Ok(Err(BitcoindRejectedTx(rpc_message))),
+                BitcoindError::JsonRpcCode { message, .. } => Ok(Err(BitcoindRejectedTx(message))),
                 bitcoind_error => Err(bitcoind_error.into()),
             },
         }

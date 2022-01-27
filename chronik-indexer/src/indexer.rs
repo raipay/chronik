@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use bitcoinsuite_bitcoind::cli::BitcoinCli;
+use bitcoinsuite_bitcoind::rpc_client::BitcoindRpcClient;
 use bitcoinsuite_bitcoind_nng::{BlockTx, MempoolTx, Message, PubInterface, RpcInterface};
 use bitcoinsuite_core::{
     ecc::Ecc, BitcoinCode, Bytes, Hashed, Network, Script, Sha256d, UnhashedTx,
@@ -25,7 +25,7 @@ use crate::{
 
 pub struct SlpIndexer {
     pub(crate) db: IndexDb,
-    pub(crate) bitcoind: BitcoinCli,
+    pub(crate) bitcoind: BitcoindRpcClient,
     pub(crate) rpc_interface: RpcInterface,
     pub(crate) pub_interface: PubInterface,
     pub(crate) data: IndexMemData,
@@ -55,7 +55,7 @@ pub enum SlpIndexerError {
 impl SlpIndexer {
     pub fn new(
         db: IndexDb,
-        bitcoind: BitcoinCli,
+        bitcoind: BitcoindRpcClient,
         rpc_interface: RpcInterface,
         pub_interface: PubInterface,
         data: IndexMemData,
@@ -76,8 +76,8 @@ impl SlpIndexer {
     }
 
     /// returns whether Initial Block Download has finished and the index is sync'd
-    pub fn catchup_step(&mut self) -> Result<bool> {
-        let blockchain_info = self.bitcoind.cmd_json("getblockchaininfo", &[])?;
+    pub async fn catchup_step(&mut self) -> Result<bool> {
+        let blockchain_info = self.bitcoind.cmd_json("getblockchaininfo", &[]).await?;
         let tip = self.db.blocks()?.tip()?;
         let tip_ref = tip.as_ref();
         let index_height = tip_ref.map(|block| block.height).unwrap_or(-1);

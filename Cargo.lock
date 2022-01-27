@@ -452,6 +452,7 @@ dependencies = [
  "bitcoinsuite-test-utils-blockchain",
  "chronik-rocksdb",
  "hex",
+ "json",
  "pretty_assertions",
  "rayon",
  "tempdir",

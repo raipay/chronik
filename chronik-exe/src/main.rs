@@ -1,6 +1,6 @@
-use std::{ffi::OsString, io::Read, net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc};
+use std::{io::Read, net::SocketAddr, path::PathBuf, sync::Arc};
 
-use bitcoinsuite_bitcoind::cli::BitcoinCli;
+use bitcoinsuite_bitcoind::rpc_client::{BitcoindRpcClient, BitcoindRpcClientConf};
 use bitcoinsuite_bitcoind_nng::{PubInterface, RpcInterface};
 use bitcoinsuite_core::Network;
 use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
@@ -17,10 +17,9 @@ const SCRIPT_TXS_PAGE_SIZE: usize = 1000;
 #[derive(Deserialize, Debug, Clone)]
 struct ChronikConf {
     host: SocketAddr,
-    bitcoin_cli: PathBuf,
-    datadir: PathBuf,
     nng_pub_url: String,
     nng_rpc_url: String,
+    bitcoind_rpc: BitcoindRpcClientConf,
     db_path: PathBuf,
     cache_script_history: usize,
     network: Network,
@@ -60,10 +59,7 @@ async fn main() -> Result<()> {
     let conf: ChronikConf =
         toml::from_str(&conf_contents).wrap_err_with(|| InvalidConfigFail(conf_path.clone()))?;
 
-    let client = BitcoinCli {
-        bitcoincli_path: conf.bitcoin_cli,
-        datadir_arg: OsString::from_str(&format!("-datadir={}", conf.datadir.to_string_lossy()))?,
-    };
+    let client = BitcoindRpcClient::new(conf.bitcoind_rpc);
     let pub_interface = PubInterface::open(&conf.nng_pub_url)?;
     let rpc_interface = RpcInterface::open(&conf.nng_rpc_url)?;
 
@@ -86,7 +82,7 @@ async fn main() -> Result<()> {
         Arc::new(EccSecp256k1::default()),
     )?;
 
-    while !slp_indexer.catchup_step()? {}
+    while !slp_indexer.catchup_step().await? {}
     slp_indexer.leave_catchup()?;
 
     let slp_indexer = Arc::new(RwLock::new(slp_indexer));
