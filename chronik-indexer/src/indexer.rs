@@ -62,6 +62,7 @@ impl SlpIndexer {
         network: Network,
         ecc: Arc<dyn Ecc + Sync + Send>,
     ) -> Result<Self> {
+        db.check_db_version()?;
         pub_interface.subscribe("------------")?;
         Ok(SlpIndexer {
             db,

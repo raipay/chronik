@@ -11,8 +11,8 @@ use thiserror::Error;
 
 use crate::{
     input_tx_nums::fetch_input_tx_nums, Block, BlockHeight, BlockReader, BlockStatsReader,
-    BlockStatsWriter, BlockTxs, BlockWriter, Db, MempoolData, MempoolDeleteMode, MempoolSlpData,
-    MempoolTxEntry, MempoolWriter, ScriptTxsConf, ScriptTxsReader, ScriptTxsWriter,
+    BlockStatsWriter, BlockTxs, BlockWriter, Db, DbSchema, MempoolData, MempoolDeleteMode,
+    MempoolSlpData, MempoolTxEntry, MempoolWriter, ScriptTxsConf, ScriptTxsReader, ScriptTxsWriter,
     ScriptTxsWriterCache, SlpReader, SlpWriter, SpendsReader, SpendsWriter, Timings, TxReader,
     TxWriter, UtxosReader, UtxosWriter,
 };
@@ -52,6 +52,10 @@ impl IndexDb {
             timings: Default::default(),
             script_txs_conf,
         }
+    }
+
+    pub fn check_db_version(&self) -> Result<()> {
+        DbSchema::new(&self.db)?.check_db_version()
     }
 
     pub fn blocks(&self) -> Result<BlockReader> {

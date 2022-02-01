@@ -3,7 +3,8 @@ use std::path::Path;
 use rocksdb::{ColumnFamily, ColumnFamilyDescriptor, Options, WriteBatch};
 
 use crate::{
-    BlockStatsWriter, BlockWriter, ScriptTxsWriter, SlpWriter, SpendsWriter, TxWriter, UtxosWriter,
+    BlockStatsWriter, BlockWriter, DbSchema, ScriptTxsWriter, SlpWriter, SpendsWriter, TxWriter,
+    UtxosWriter,
 };
 use bitcoinsuite_error::{ErrorMeta, Result, WrapErr};
 use thiserror::Error;
@@ -30,6 +31,7 @@ use self::DbError::*;
 impl Db {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let mut cfs = Vec::new();
+        DbSchema::add_cfs(&mut cfs);
         BlockWriter::add_cfs(&mut cfs);
         BlockStatsWriter::add_cfs(&mut cfs);
         TxWriter::add_cfs(&mut cfs);
