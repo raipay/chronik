@@ -5,47 +5,83 @@ use chronik_rocksdb::ScriptPayload;
 use tokio::sync::broadcast;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SubscribeMessage {
+pub enum SubscribeScriptMessage {
     AddedToMempool(Sha256d),
     RemovedFromMempool(Sha256d),
     Confirmed(Sha256d),
     Reorg(Sha256d),
 }
 
-const CHANNEL_CAPACITY: usize = 16;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubscribeBlockMessage {
+    BlockConnected(Sha256d),
+    BlockDisconnected(Sha256d),
+}
 
-#[derive(Debug, Clone, Default)]
+const SCRIPT_CHANNEL_CAPACITY: usize = 16;
+const BLOCK_CHANNEL_CAPACITY: usize = 16;
+
+#[derive(Debug, Clone)]
 pub struct Subscribers {
-    subs: HashMap<ScriptPayload, broadcast::Sender<SubscribeMessage>>,
+    subs_script: HashMap<ScriptPayload, broadcast::Sender<SubscribeScriptMessage>>,
+    subs_block: broadcast::Sender<SubscribeBlockMessage>,
 }
 
 impl Subscribers {
-    pub fn subscribe(&mut self, script: &ScriptPayload) -> broadcast::Receiver<SubscribeMessage> {
-        match self.subs.get(script) {
+    pub fn subscribe_to_script(
+        &mut self,
+        script: &ScriptPayload,
+    ) -> broadcast::Receiver<SubscribeScriptMessage> {
+        match self.subs_script.get(script) {
             Some(sender) => sender.subscribe(),
             None => {
-                let (sender, receiver) = broadcast::channel(CHANNEL_CAPACITY);
-                self.subs.insert(script.clone(), sender);
+                let (sender, receiver) = broadcast::channel(SCRIPT_CHANNEL_CAPACITY);
+                self.subs_script.insert(script.clone(), sender);
                 receiver
             }
         }
     }
 
     /// Clean unsubscribe
-    pub fn unsubscribe(&mut self, script: &ScriptPayload) {
-        if let Some(sender) = self.subs.get(script) {
+    pub fn unsubscribe_from_script(&mut self, script: &ScriptPayload) {
+        if let Some(sender) = self.subs_script.get(script) {
             if sender.receiver_count() == 0 {
-                self.subs.remove(script);
+                self.subs_script.remove(script);
             }
         }
     }
 
-    pub(crate) fn broadcast(&mut self, script: &ScriptPayload, msg: SubscribeMessage) {
-        if let Some(sender) = self.subs.get(script) {
+    pub fn subscribe_to_blocks(&self) -> broadcast::Receiver<SubscribeBlockMessage> {
+        self.subs_block.subscribe()
+    }
+
+    pub(crate) fn broadcast_to_script(
+        &mut self,
+        script: &ScriptPayload,
+        msg: SubscribeScriptMessage,
+    ) {
+        if let Some(sender) = self.subs_script.get(script) {
             // Unclean unsubscribe
             if sender.send(msg).is_err() {
-                self.subs.remove(script);
+                self.subs_script.remove(script);
             }
+        }
+    }
+
+    pub(crate) fn broadcast_to_blocks(&mut self, msg: SubscribeBlockMessage) {
+        if self.subs_block.receiver_count() > 0 {
+            if let Err(err) = self.subs_block.send(msg) {
+                eprintln!("Unexpected send error: {}", err);
+            }
+        }
+    }
+}
+
+impl Default for Subscribers {
+    fn default() -> Self {
+        Subscribers {
+            subs_script: Default::default(),
+            subs_block: broadcast::channel(BLOCK_CHANNEL_CAPACITY).0,
         }
     }
 }

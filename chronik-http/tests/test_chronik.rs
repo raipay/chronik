@@ -162,7 +162,7 @@ async fn test_server() -> Result<()> {
         proto::subscribe_msg::MsgType::AddedToMempool(added_to_mempool) => {
             assert_eq!(added_to_mempool.txid, txid.as_slice());
         }
-        _ => panic!("Unexpected message"),
+        msg => panic!("Unexpected message: {:?}", msg),
     }
 
     let response = client.get(format!("{}/tx/ab", url)).send().await?;
@@ -372,8 +372,33 @@ async fn test_server() -> Result<()> {
         }
     );
 
-    bitcoind.cmd_json("generatetoaddress", &["1", burn_address.as_str()])?;
+    let hashes = bitcoind.cmd_json("generatetoaddress", &["1", burn_address.as_str()])?;
     slp_indexer.write().await.process_next_msg()?;
+
+    let mut n_attempt = 0;
+    loop {
+        n_attempt += 1;
+        if n_attempt > 100 {
+            panic!("Too many attempts");
+        }
+        // msg from ws (within 50ms)
+        let msg = timeout(Duration::from_millis(50), ws_client.next())
+            .await?
+            .unwrap()?;
+        let msg = msg.into_data();
+        let msg = proto::SubscribeMsg::decode(msg.as_slice())?;
+        match msg.msg_type.unwrap() {
+            proto::subscribe_msg::MsgType::BlockConnected(block_connected) => {
+                assert_eq!(
+                    Sha256d::from_slice(&block_connected.block_hash)?,
+                    Sha256d::from_hex_be(hashes[0].as_str().unwrap())?,
+                );
+                break;
+            }
+            proto::subscribe_msg::MsgType::Confirmed(_) => {}
+            msg => panic!("Unexpected message: {:?}", msg),
+        }
+    }
 
     for (path, error_code, msg) in [
         ("/blocks/-1/10", "invalid-field", "Invalid start_height: -1"),

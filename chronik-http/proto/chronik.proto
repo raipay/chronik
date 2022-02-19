@@ -203,6 +203,8 @@ message SubscribeMsg {
         MsgRemovedFromMempool RemovedFromMempool = 3;
         MsgConfirmed Confirmed = 4;
         MsgReorg Reorg = 5;
+        MsgBlockConnected BlockConnected = 6;
+        MsgBlockDisconnected BlockDisconnected = 7;
     }
 }
 
@@ -220,6 +222,14 @@ message MsgConfirmed {
 
 message MsgReorg {
     bytes txid = 1;
+}
+
+message MsgBlockConnected {
+    bytes block_hash = 1;
+}
+
+message MsgBlockDisconnected {
+    bytes block_hash = 1;
 }
 
 message Error {

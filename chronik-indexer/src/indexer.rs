@@ -18,7 +18,7 @@ use chronik_rocksdb::{
 
 use crate::{
     broadcast::Broadcast,
-    subscribers::{SubscribeMessage, Subscribers},
+    subscribers::{SubscribeBlockMessage, SubscribeScriptMessage, Subscribers},
     txs::Txs,
     Blocks, ScriptHistory, Utxos,
 };
@@ -273,7 +273,13 @@ impl SlpIndexer {
     ) -> Result<()> {
         let next_height = tip.as_ref().map(|tip| tip.height + 1).unwrap_or(0);
         let txs = Self::_block_txs(&block)?;
-        Self::broadcast_block_msg(&mut self.subscribers, &txs, &block.txs, true);
+        Self::broadcast_block_msg(
+            &mut self.subscribers,
+            block.header.hash.clone(),
+            &txs,
+            &block.txs,
+            true,
+        );
         let db_block = Block {
             hash: block.header.hash.clone(),
             prev_hash: block.header.prev_hash,
@@ -319,7 +325,7 @@ impl SlpIndexer {
         )?;
         println!(
             "Added block {} with {} txs, height {}",
-            block.header.hash, num_txs, next_height
+            block.header.hash, num_txs, next_height,
         );
         Ok(())
     }
@@ -330,7 +336,13 @@ impl SlpIndexer {
         block: bitcoinsuite_bitcoind_nng::Block,
     ) -> Result<()> {
         let txs = Self::_block_txs(&block)?;
-        Self::broadcast_block_msg(&mut self.subscribers, &txs, &block.txs, false);
+        Self::broadcast_block_msg(
+            &mut self.subscribers,
+            block.header.hash.clone(),
+            &txs,
+            &block.txs,
+            false,
+        );
         let tip = tip.unwrap();
         let txids_fn = |idx: usize| &block.txs[idx].tx.txid;
         self.db.delete_block(
@@ -357,7 +369,7 @@ impl SlpIndexer {
         let spent_coins = nng_tx.spent_coins.unwrap_or_default();
         Self::broadcast_msg(
             &mut self.subscribers,
-            SubscribeMessage::AddedToMempool(nng_tx.txid.clone()),
+            SubscribeScriptMessage::AddedToMempool(nng_tx.txid.clone()),
             spent_coins
                 .iter()
                 .map(|spent_output| &spent_output.tx_output.script),
@@ -377,7 +389,7 @@ impl SlpIndexer {
         if let Some(tx) = self.db.mempool(&self.data).tx(&txid) {
             Self::broadcast_msg(
                 &mut self.subscribers,
-                SubscribeMessage::RemovedFromMempool(txid.clone()),
+                SubscribeScriptMessage::RemovedFromMempool(txid.clone()),
                 tx.spent_coins
                     .iter()
                     .map(|spent_coin| &spent_coin.tx_output.script),
@@ -390,7 +402,7 @@ impl SlpIndexer {
 
     fn broadcast_msg<'a>(
         subscribers: &mut Subscribers,
-        msg: SubscribeMessage,
+        msg: SubscribeScriptMessage,
         spent_scripts: impl IntoIterator<Item = &'a Script>,
         output_scripts: impl IntoIterator<Item = &'a Script>,
     ) {
@@ -399,7 +411,7 @@ impl SlpIndexer {
             for script_payload in script_payloads(script) {
                 let script_payload = script_payload.payload;
                 if !notified_payloads.contains(&script_payload) {
-                    subscribers.broadcast(&script_payload, msg.clone());
+                    subscribers.broadcast_to_script(&script_payload, msg.clone());
                     notified_payloads.insert(script_payload);
                 }
             }
@@ -408,10 +420,16 @@ impl SlpIndexer {
 
     fn broadcast_block_msg(
         subscribers: &mut Subscribers,
+        block_hash: Sha256d,
         txs: &[UnhashedTx],
         block_txs: &[BlockTx],
         is_confirmed: bool,
     ) {
+        subscribers.broadcast_to_blocks(if is_confirmed {
+            SubscribeBlockMessage::BlockConnected(block_hash)
+        } else {
+            SubscribeBlockMessage::BlockDisconnected(block_hash)
+        });
         for (tx, block_tx) in txs.iter().zip(block_txs) {
             let spent_scripts = block_tx.tx.spent_coins.iter().flat_map(|spent_coins| {
                 spent_coins
@@ -421,8 +439,8 @@ impl SlpIndexer {
             Self::broadcast_msg(
                 subscribers,
                 match is_confirmed {
-                    true => SubscribeMessage::Confirmed(block_tx.tx.txid.clone()),
-                    false => SubscribeMessage::Reorg(block_tx.tx.txid.clone()),
+                    true => SubscribeScriptMessage::Confirmed(block_tx.tx.txid.clone()),
+                    false => SubscribeScriptMessage::Reorg(block_tx.tx.txid.clone()),
                 },
                 spent_scripts,
                 tx.outputs.iter().map(|output| &output.script),

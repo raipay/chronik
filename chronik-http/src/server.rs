@@ -12,7 +12,10 @@ use axum::{
 use bitcoinsuite_core::{BitcoinCode, BitcoinSuiteError, Hashed, OutPoint, Sha256d, UnhashedTx};
 use bitcoinsuite_error::{ErrorMeta, Report};
 use bitcoinsuite_slp::{SlpTokenType, SlpTxTypeVariant};
-use chronik_indexer::{subscribers::SubscribeMessage, SlpIndexer, UtxoStateVariant};
+use chronik_indexer::{
+    subscribers::{SubscribeBlockMessage, SubscribeScriptMessage},
+    SlpIndexer, UtxoStateVariant,
+};
 use chronik_rocksdb::ScriptPayload;
 use futures::future::select_all;
 use itertools::Itertools;
@@ -420,7 +423,7 @@ fn subscribe_client_msg_action(
 }
 
 fn subscribe_script_msg_action(
-    script_msg: Result<SubscribeMessage, broadcast::error::RecvError>,
+    script_msg: Result<SubscribeScriptMessage, broadcast::error::RecvError>,
 ) -> Result<SubscribeAction, Report> {
     use proto::subscribe_msg::MsgType;
     let script_msg = match script_msg {
@@ -428,20 +431,20 @@ fn subscribe_script_msg_action(
         Err(_) => return Ok(SubscribeAction::Nothing),
     };
     let msg_type = Some(match script_msg {
-        SubscribeMessage::AddedToMempool(txid) => {
+        SubscribeScriptMessage::AddedToMempool(txid) => {
             MsgType::AddedToMempool(proto::MsgAddedToMempool {
                 txid: txid.as_slice().to_vec(),
             })
         }
-        SubscribeMessage::RemovedFromMempool(txid) => {
+        SubscribeScriptMessage::RemovedFromMempool(txid) => {
             MsgType::RemovedFromMempool(proto::MsgRemovedFromMempool {
                 txid: txid.as_slice().to_vec(),
             })
         }
-        SubscribeMessage::Confirmed(txid) => MsgType::Confirmed(proto::MsgConfirmed {
+        SubscribeScriptMessage::Confirmed(txid) => MsgType::Confirmed(proto::MsgConfirmed {
             txid: txid.as_slice().to_vec(),
         }),
-        SubscribeMessage::Reorg(txid) => MsgType::Reorg(proto::MsgReorg {
+        SubscribeScriptMessage::Reorg(txid) => MsgType::Reorg(proto::MsgReorg {
             txid: txid.as_slice().to_vec(),
         }),
     });
@@ -450,8 +453,38 @@ fn subscribe_script_msg_action(
     Ok(SubscribeAction::Message(msg))
 }
 
+fn subscribe_block_msg_action(
+    block_msg: Result<SubscribeBlockMessage, broadcast::error::RecvError>,
+) -> Result<SubscribeAction, Report> {
+    use proto::subscribe_msg::MsgType;
+    let script_msg = match block_msg {
+        Ok(script_msg) => script_msg,
+        Err(_) => return Ok(SubscribeAction::Nothing),
+    };
+    let msg_type = Some(match script_msg {
+        SubscribeBlockMessage::BlockConnected(block_hash) => {
+            MsgType::BlockConnected(proto::MsgBlockConnected {
+                block_hash: block_hash.as_slice().to_vec(),
+            })
+        }
+        SubscribeBlockMessage::BlockDisconnected(block_hash) => {
+            MsgType::BlockDisconnected(proto::MsgBlockDisconnected {
+                block_hash: block_hash.as_slice().to_vec(),
+            })
+        }
+    });
+    let msg_proto = proto::SubscribeMsg { msg_type };
+    let msg = ws::Message::Binary(msg_proto.encode_to_vec());
+    Ok(SubscribeAction::Message(msg))
+}
+
 async fn handle_subscribe_socket(mut socket: WebSocket, server: ChronikServer) {
-    let mut subbed_scripts = HashMap::<ScriptPayload, broadcast::Receiver<SubscribeMessage>>::new();
+    let mut subbed_scripts =
+        HashMap::<ScriptPayload, broadcast::Receiver<SubscribeScriptMessage>>::new();
+    let mut blocks_receiver = {
+        let mut slp_indexer = server.slp_indexer.write().await;
+        slp_indexer.subscribers_mut().subscribe_to_blocks()
+    };
     loop {
         let subscribe_action = if subbed_scripts.is_empty() {
             let client_msg = socket.recv().await;
@@ -464,6 +497,7 @@ async fn handle_subscribe_socket(mut socket: WebSocket, server: ChronikServer) {
             );
             tokio::select! {
                 client_msg = socket.recv() => subscribe_client_msg_action(client_msg),
+                block_msg = blocks_receiver.recv() => subscribe_block_msg_action(block_msg),
                 (script_msg, _, _) = script_receivers => subscribe_script_msg_action(script_msg),
             }
         };
@@ -492,7 +526,9 @@ async fn handle_subscribe_socket(mut socket: WebSocket, server: ChronikServer) {
                     let mut slp_indexer = server.slp_indexer.write().await;
                     for (script_payload, receiver) in subbed_scripts {
                         std::mem::drop(receiver);
-                        slp_indexer.subscribers_mut().unsubscribe(&script_payload);
+                        slp_indexer
+                            .subscribers_mut()
+                            .unsubscribe_from_script(&script_payload);
                     }
                 }
                 return;
@@ -504,11 +540,15 @@ async fn handle_subscribe_socket(mut socket: WebSocket, server: ChronikServer) {
             } => {
                 let mut slp_indexer = server.slp_indexer.write().await;
                 if is_subscribe {
-                    let receiver = slp_indexer.subscribers_mut().subscribe(&script_payload);
+                    let receiver = slp_indexer
+                        .subscribers_mut()
+                        .subscribe_to_script(&script_payload);
                     subbed_scripts.insert(script_payload, receiver);
                 } else {
                     std::mem::drop(subbed_scripts.remove(&script_payload));
-                    slp_indexer.subscribers_mut().unsubscribe(&script_payload);
+                    slp_indexer
+                        .subscribers_mut()
+                        .unsubscribe_from_script(&script_payload);
                 }
             }
             SubscribeAction::Nothing => {}

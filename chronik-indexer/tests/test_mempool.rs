@@ -19,8 +19,9 @@ use bitcoinsuite_slp::{
 use bitcoinsuite_test_utils::bin_folder;
 use bitcoinsuite_test_utils_blockchain::build_tx;
 use chronik_indexer::{
-    broadcast::BroadcastError, subscribers::SubscribeMessage, SlpIndexer, UtxoState,
-    UtxoStateVariant,
+    broadcast::BroadcastError,
+    subscribers::{SubscribeBlockMessage, SubscribeScriptMessage},
+    SlpIndexer, UtxoState, UtxoStateVariant,
 };
 use chronik_rocksdb::{
     BlockStats, Db, IndexDb, IndexMemData, MempoolTxEntry, PayloadPrefix, ScriptPayload,
@@ -86,14 +87,31 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
         0,
     );
 
-    bitcoind.cmd_json("generatetoaddress", &["10", anyone_address.as_str()])?;
-    while !slp_indexer.catchup_step().await? {}
-    assert_eq!(
-        slp_indexer
-            .script_history()
-            .rev_history_num_pages(P2SH, anyone_slice, 4)?,
-        3,
-    );
+    let dt_timeout = Duration::from_secs(3);
+    {
+        let hashes = bitcoind.cmd_json("generatetoaddress", &["10", anyone_address.as_str()])?;
+        // Index genesis block
+        assert!(!slp_indexer.catchup_step().await?);
+
+        let mut i = 0;
+        let mut blocks = slp_indexer.subscribers_mut().subscribe_to_blocks();
+        while !slp_indexer.catchup_step().await? {
+            let expected_hash = Sha256d::from_hex_be(hashes[i].as_str().unwrap())?;
+            let msg = timeout(dt_timeout, blocks.recv()).await??;
+            let actual_hash = match msg {
+                SubscribeBlockMessage::BlockConnected(hash) => hash,
+                SubscribeBlockMessage::BlockDisconnected(_) => unreachable!(),
+            };
+            assert_eq!(expected_hash, actual_hash);
+            i += 1;
+        }
+        assert_eq!(
+            slp_indexer
+                .script_history()
+                .rev_history_num_pages(P2SH, anyone_slice, 4)?,
+            3,
+        );
+    }
 
     let burn_address = CashAddress::from_hash(BCHREG, AddressType::P2SH, ShaRmd160::new([0; 20]));
     let burn_hash = [1; 20];
@@ -105,11 +123,12 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
 
     bitcoind.cmd_string("setmocktime", &["2100000000"])?;
 
-    let dt_timeout = Duration::from_secs(3);
-    let mut receiver = slp_indexer.subscribers_mut().subscribe(&ScriptPayload {
-        payload_prefix: P2SH,
-        payload_data: anyone_slice.to_vec(),
-    });
+    let mut receiver = slp_indexer
+        .subscribers_mut()
+        .subscribe_to_script(&ScriptPayload {
+            payload_prefix: P2SH,
+            payload_data: anyone_slice.to_vec(),
+        });
 
     let utxo_entries = slp_indexer.db().utxos()?.utxos(P2SH, anyone_slice)?;
     assert_eq!(utxo_entries.len(), 10);
@@ -231,7 +250,7 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
     };
     slp_indexer.process_next_msg()?;
     match timeout(dt_timeout, receiver.recv()).await?? {
-        SubscribeMessage::AddedToMempool(txid) => assert_eq!(txid, txid1),
+        SubscribeScriptMessage::AddedToMempool(txid) => assert_eq!(txid, txid1),
         _ => panic!("Wrong message received"),
     }
     assert_eq!(
@@ -370,7 +389,7 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
     };
     slp_indexer.process_next_msg()?;
     match timeout(dt_timeout, receiver.recv()).await?? {
-        SubscribeMessage::AddedToMempool(txid) => assert_eq!(txid, txid2),
+        SubscribeScriptMessage::AddedToMempool(txid) => assert_eq!(txid, txid2),
         _ => panic!("Wrong message received"),
     }
     assert_eq!(
@@ -525,7 +544,7 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
     };
     slp_indexer.process_next_msg()?;
     match timeout(dt_timeout, receiver.recv()).await?? {
-        SubscribeMessage::AddedToMempool(txid) => assert_eq!(txid, txid3),
+        SubscribeScriptMessage::AddedToMempool(txid) => assert_eq!(txid, txid3),
         _ => panic!("Wrong message received"),
     }
     assert_eq!(
@@ -674,7 +693,7 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
     let mut subbed_txids = HashSet::new();
     for _ in 0..2 {
         subbed_txids.insert(match timeout(dt_timeout, receiver.recv()).await?? {
-            SubscribeMessage::Confirmed(txid) => txid,
+            SubscribeScriptMessage::Confirmed(txid) => txid,
             _ => panic!("Wrong message received"),
         });
     }
@@ -769,7 +788,7 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
     // Remove tx3 from mempool
     slp_indexer.process_next_msg()?;
     match timeout(dt_timeout, receiver.recv()).await?? {
-        SubscribeMessage::RemovedFromMempool(txid) => assert_eq!(txid, txid3),
+        SubscribeScriptMessage::RemovedFromMempool(txid) => assert_eq!(txid, txid3),
         _ => panic!("Wrong message received"),
     }
     // Process block
@@ -777,7 +796,7 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
     let mut subbed_txids = HashSet::new();
     for _ in 0..3 {
         subbed_txids.insert(match timeout(dt_timeout, receiver.recv()).await?? {
-            SubscribeMessage::Confirmed(txid) => txid,
+            SubscribeScriptMessage::Confirmed(txid) => txid,
             _ => panic!("Wrong message received"),
         });
     }
