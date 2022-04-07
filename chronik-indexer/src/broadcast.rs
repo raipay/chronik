@@ -91,30 +91,10 @@ impl<'a> Broadcast<'a> {
                 return Ok(result);
             }
         }
-        let raw_tx = tx.ser();
-        let result = self
-            .indexer
-            .bitcoind
-            .cmd_json("testmempoolaccept", &[json::array![raw_tx.hex()]])
-            .await;
-        match result {
-            Ok(json_result) => {
-                let tx_result = &json_result[0];
-                if !tx_result["allowed"].as_bool().expect("No 'allowed' field") {
-                    return Ok(Err(BroadcastError::BitcoindRejectedTx(
-                        tx_result["reject-reason"]
-                            .as_str()
-                            .expect("No 'reject-reason' field")
-                            .to_string(),
-                    )));
-                }
-                Ok(Ok(()))
-            }
-            Err(report) => match report.downcast::<BitcoindError>()? {
-                BitcoindError::JsonRpcCode { message, .. } => Ok(Err(BitcoindRejectedTx(message))),
-                bitcoind_error => Err(bitcoind_error.into()),
-            },
+        if let Err(msg) = self.indexer.bitcoind.test_mempool_accept(&tx.ser()).await? {
+            return Ok(Err(BroadcastError::BitcoindRejectedTx(msg)));
         }
+        Ok(Ok(()))
     }
 }
 
