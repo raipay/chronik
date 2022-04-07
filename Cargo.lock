@@ -207,6 +207,7 @@ dependencies = [
  "bitcoinsuite-core",
  "bitcoinsuite-error",
  "bitcoinsuite-test-utils",
+ "hex",
  "json",
  "reqwest",
  "serde",
