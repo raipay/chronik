@@ -164,7 +164,7 @@ impl<'a> SlpWriter<'a> {
         // Insert new tokens
         let mut token_num_by_id = self.insert_new_tokens(batch, valid_slp_txs.values())?;
         // Insert SLP txs
-        self.insert_new_valid_txs(batch, valid_slp_txs.into_iter(), &mut token_num_by_id)?;
+        self.insert_new_valid_txs(batch, valid_slp_txs.iter(), &mut token_num_by_id)?;
         // Insert invalid SLP txs
         self.insert_new_invalid_txs(batch, first_tx_num, invalid_parsed_slp_txs, invalid_slp_txs);
         Ok(())
@@ -334,14 +334,14 @@ impl<'a> SlpWriter<'a> {
         Ok(token_num_by_id)
     }
 
-    fn insert_new_valid_txs(
+    fn insert_new_valid_txs<'b>(
         &self,
         batch: &mut WriteBatch,
-        valid_slp_txs: impl Iterator<Item = (TxNum, SlpValidTxData)>,
+        valid_slp_txs: impl Iterator<Item = (&'b TxNum, &'b SlpValidTxData)>,
         token_num_by_id: &mut HashMap<[u8; 32], TokenNum>,
     ) -> Result<()> {
-        for (tx_num, slp_tx) in valid_slp_txs {
-            let slp_tx_data = slp_tx.slp_tx_data;
+        for (&tx_num, slp_tx) in valid_slp_txs {
+            let slp_tx_data = &slp_tx.slp_tx_data;
             let slp_tx_type = match slp_tx_data.slp_tx_type {
                 SlpTxType::Genesis(_) => SerSlpTxType::Genesis,
                 SlpTxType::Mint => SerSlpTxType::Mint,
@@ -357,15 +357,15 @@ impl<'a> SlpWriter<'a> {
                         })?,
                 ),
             };
-            let group_token_num = match slp_tx_data.group_token_id {
+            let group_token_num = match &slp_tx_data.group_token_id {
                 Some(group_token_id) => Some(
-                    self.get_token_num_by_token_id(token_num_by_id, &group_token_id)?
+                    self.get_token_num_by_token_id(token_num_by_id, group_token_id)?
                         .ok_or(InconsistentDbNullTokenGroupId(tx_num))?,
                 ),
                 None => None,
             };
             let mut slp_burns = Vec::with_capacity(slp_tx.slp_burns.len());
-            for slp_burn in slp_tx.slp_burns {
+            for slp_burn in &slp_tx.slp_burns {
                 match slp_burn {
                     Some(slp_burn) => {
                         slp_burns.push(Some(SerSlpBurn {
