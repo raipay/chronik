@@ -129,7 +129,7 @@ impl<'a> Txs<'a> {
             }
         }
         let (slp_tx_data, slp_burns) = match slp_reader.slp_data_by_tx_num(tx_num)? {
-            Some((slp_tx_data, slp_burns)) => (Some(slp_tx_data), slp_burns),
+            Some(slp) => (Some(slp.slp_tx_data), slp.slp_burns),
             None => (
                 None,
                 tx.inputs
@@ -203,15 +203,16 @@ impl<'a> Txs<'a> {
             .tx_num_by_txid(&outpoint.txid)?
             .expect("Inconsistent index");
         match slp_reader.slp_data_by_tx_num(tx_num)? {
-            Some((slp_tx_data, _)) => {
-                let token = slp_tx_data
+            Some(slp) => {
+                let token = slp
+                    .slp_tx_data
                     .output_tokens
                     .get(outpoint.out_idx as usize)
                     .cloned()
                     .unwrap_or_default();
                 Ok(Some(Box::new(SlpBurn {
                     token,
-                    token_id: slp_tx_data.token_id,
+                    token_id: slp.slp_tx_data.token_id,
                 })))
             }
             None => Ok(None),

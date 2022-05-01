@@ -579,17 +579,13 @@ impl<'a> SlpReader<'a> {
         Ok(Some(token_num))
     }
 
-    #[allow(clippy::type_complexity)]
-    pub fn slp_data_by_tx_num(
-        &self,
-        tx_num: TxNum,
-    ) -> Result<Option<(SlpTxData, Vec<Option<Box<SlpBurn>>>)>> {
+    pub fn slp_data_by_tx_num(&self, tx_num: TxNum) -> Result<Option<SlpValidTxData>> {
         let tx_num = TxNumZC::new(tx_num);
         let slp_tx_data = match self.db.get(self.cf_slp_tx_data(), tx_num.as_bytes())? {
             Some(slp_tx_data) => bincode::deserialize::<SerSlpTxEntry>(&slp_tx_data)?,
             None => return Ok(None),
         };
-        let burns = slp_tx_data
+        let slp_burns = slp_tx_data
             .slp_burns
             .iter()
             .map(|burn| {
@@ -646,7 +642,10 @@ impl<'a> SlpReader<'a> {
                 })
                 .transpose()?,
         };
-        Ok(Some((slp_tx_data, burns)))
+        Ok(Some(SlpValidTxData {
+            slp_tx_data,
+            slp_burns,
+        }))
     }
 
     pub fn slp_invalid_message_tx_num(&self, tx_num: TxNum) -> Result<Option<String>> {
@@ -1111,31 +1110,31 @@ mod tests {
                         );
                     }
                     Outcome::Valid(expected_slp) => {
-                        let (actual_slp, actual_burns) =
+                        let actual_slp =
                             result.unwrap_or_else(|| panic!("Expected SLP for txid {}", txid));
                         assert_eq!(
-                            &actual_slp, expected_slp,
+                            &actual_slp.slp_tx_data, expected_slp,
                             "Expected equal SlpTxData for txid {}",
                             txid
                         );
                         assert_eq!(
-                            actual_burns,
-                            vec![None; actual_burns.len()],
+                            actual_slp.slp_burns,
+                            vec![None; actual_slp.slp_burns.len()],
                             "Expected no burns for txid {}",
                             txid
                         );
                         assert_eq!(message, None, "Expected no error for txid {}", txid);
                     }
                     Outcome::ValidBurn(expected_slp, expected_burns) => {
-                        let (actual_slp, actual_burns) =
+                        let actual_slp =
                             result.unwrap_or_else(|| panic!("Expected Some for txid {}", txid));
                         assert_eq!(
-                            &actual_slp, expected_slp,
+                            &actual_slp.slp_tx_data, expected_slp,
                             "Expected equal SlpTxData for txid {}",
                             txid
                         );
                         assert_eq!(
-                            &actual_burns, expected_burns,
+                            &actual_slp.slp_burns, expected_burns,
                             "Expected burns for txid {}",
                             txid
                         );
