@@ -63,13 +63,13 @@ impl MempoolSlpData {
                         .tx_num_by_txid(&input.prev_out.txid)?
                         .and_then(|tx_num| slp_reader.slp_data_by_tx_num(tx_num).transpose())
                         .transpose()?
-                        .and_then(|(slp_tx_data, _)| {
-                            let token = *slp_tx_data.output_tokens.get(out_idx)?;
+                        .and_then(|slp| {
+                            let token = *slp.slp_tx_data.output_tokens.get(out_idx)?;
                             Some(SlpSpentOutput {
-                                token_id: slp_tx_data.token_id,
-                                token_type: slp_tx_data.slp_token_type,
+                                token_id: slp.slp_tx_data.token_id,
+                                token_type: slp.slp_tx_data.slp_token_type,
                                 token,
-                                group_token_id: slp_tx_data.group_token_id,
+                                group_token_id: slp.slp_tx_data.group_token_id,
                             })
                         }),
                 },

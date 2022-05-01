@@ -97,17 +97,18 @@ impl<'a> Utxos<'a> {
                 let slp_output =
                     slp_reader
                         .slp_data_by_tx_num(db_utxo.outpoint.tx_num)?
-                        .map(|(slp_data, _)| {
+                        .map(|slp| {
                             Box::new(SlpOutput {
-                                token_id: slp_data.token_id,
-                                tx_type: slp_data.slp_tx_type.tx_type_variant(),
-                                token_type: slp_data.slp_token_type,
-                                token: slp_data
+                                token_id: slp.slp_tx_data.token_id,
+                                tx_type: slp.slp_tx_data.slp_tx_type.tx_type_variant(),
+                                token_type: slp.slp_tx_data.slp_token_type,
+                                token: slp
+                                    .slp_tx_data
                                     .output_tokens
                                     .get(out_idx)
                                     .cloned()
                                     .unwrap_or_default(),
-                                group_token_id: slp_data.group_token_id,
+                                group_token_id: slp.slp_tx_data.group_token_id,
                             })
                         });
                 let rich_utxo = RichUtxo {
