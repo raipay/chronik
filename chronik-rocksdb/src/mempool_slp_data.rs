@@ -107,7 +107,10 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rocksdb::WriteBatch;
 
-    use crate::{BlockTxs, Db, MempoolSlpData, SlpWriter, TxEntry, TxWriter};
+    use crate::{
+        input_tx_nums::fetch_input_tx_nums, BlockTxs, Db, MempoolSlpData, SlpWriter, TxEntry,
+        TxWriter,
+    };
 
     #[test]
     fn test_slp_mempool() -> Result<()> {
@@ -134,7 +137,14 @@ mod tests {
         {
             // Validate initial block
             let mut batch = WriteBatch::default();
-            slp_writer.insert_block_txs(&mut batch, 0, &block_txs, |idx| &block_txids[idx])?;
+            let input_tx_nums = fetch_input_tx_nums(&db, 0, |idx| &block_txids[idx], &block_txs)?;
+            slp_writer.insert_block_txs(
+                &mut batch,
+                0,
+                &block_txs,
+                |idx| &block_txids[idx],
+                &input_tx_nums,
+            )?;
             let block_txs = block_txids
                 .iter()
                 .cloned()

@@ -113,8 +113,8 @@ mod tests {
     use rocksdb::WriteBatch;
 
     use crate::{
-        BlockTxs, Db, MempoolData, MempoolSlpData, MempoolTxEntry, MempoolWriter, SlpWriter,
-        TxEntry, TxWriter,
+        input_tx_nums::fetch_input_tx_nums, BlockTxs, Db, MempoolData, MempoolSlpData,
+        MempoolTxEntry, MempoolWriter, SlpWriter, TxEntry, TxWriter,
     };
 
     #[test]
@@ -145,7 +145,14 @@ mod tests {
         {
             // Validate initial block
             let mut batch = WriteBatch::default();
-            slp_writer.insert_block_txs(&mut batch, 0, &block_txs, |idx| &block_txids[idx])?;
+            let input_tx_nums = fetch_input_tx_nums(&db, 0, |idx| &block_txids[idx], &block_txs)?;
+            slp_writer.insert_block_txs(
+                &mut batch,
+                0,
+                &block_txs,
+                |idx| &block_txids[idx],
+                &input_tx_nums,
+            )?;
             let block_txs = block_txids
                 .iter()
                 .cloned()
