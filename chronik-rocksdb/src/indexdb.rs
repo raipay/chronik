@@ -177,7 +177,7 @@ impl IndexDb {
         timings.timings.stop_timer("spends");
 
         timings.timings.start_timer();
-        slp_writer.insert_block_txs(&mut batch, first_tx_num, txs, txids_fn)?;
+        slp_writer.insert_block_txs(&mut batch, first_tx_num, txs, txids_fn, &input_tx_nums)?;
         timings.timings.stop_timer("slp");
 
         timings.timings.start_timer();

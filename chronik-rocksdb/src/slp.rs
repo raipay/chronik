@@ -18,7 +18,7 @@ use zerocopy::{AsBytes, U32};
 
 use crate::{
     data::interpret, validate_slp_batch, BatchSlpTx, Db, OutpointEntry, SlpInvalidTxData, TxNum,
-    TxNumZC, TxReader, CF,
+    TxNumZC, CF,
 };
 
 pub const CF_SLP_TOKEN_ID_BY_NUM: &str = "slp_token_id_by_num";
@@ -141,19 +141,19 @@ impl<'a> SlpWriter<'a> {
         first_tx_num: TxNum,
         txs: &[UnhashedTx],
         txid_fn: impl Fn(usize) -> &'b Sha256d + Send + Sync,
+        input_tx_nums: &[Vec<TxNum>],
     ) -> Result<()> {
         let (parsed_slp_txs, invalid_parsed_slp_txs) = Self::parse_block_slp_txs(txs, &txid_fn);
         // Short-circuit for block without any SLP txs
         if parsed_slp_txs.is_empty() && invalid_parsed_slp_txs.is_empty() {
             return Ok(());
         }
-        let txid_map = (0..txs.len())
-            .map(|tx_idx| (txid_fn(tx_idx), first_tx_num + tx_idx as TxNum))
-            .collect::<HashMap<_, _>>();
-        // Fetch spent tx nums, and bundle into BatchSlpTxs
-        let batch_txs = self.fetch_batch_txs(parsed_slp_txs, txs, &txid_map)?;
-        // Fetch known_slp_outputs
-        let known_slp_outputs = self.fetch_known_slp_outputs(&batch_txs)?;
+        // Fetch the SLP state of all inputs
+        let spent_slp_outputs = self.fetch_spent_slp_outputs(txs, input_tx_nums)?;
+        // Bundle SLP txs into BatchSlpTxs
+        let batch_txs = self.build_batch_txs(parsed_slp_txs, txs, input_tx_nums);
+        // Bundle batch_txs into known_slp_outputs
+        let known_slp_outputs = self.build_known_slp_outputs(&batch_txs, &spent_slp_outputs);
         // Turn vec of (tx_idx, batch_tx) into HashMap of tx_num => batch_tx
         let batch_txs: HashMap<TxNum, BatchSlpTx> = batch_txs
             .into_iter()
@@ -197,79 +197,29 @@ impl<'a> SlpWriter<'a> {
             })
     }
 
-    fn fetch_batch_txs<'b>(
+    fn fetch_spent_slp_outputs(
         &self,
-        parsed_slp_txs: Vec<(usize, SlpParseData)>,
-        txs: &'b [UnhashedTx],
-        txid_map: &HashMap<&Sha256d, TxNum>,
-    ) -> Result<Vec<(usize, BatchSlpTx<'b>)>> {
-        let tx_reader = TxReader::new(self.db)?;
-        parsed_slp_txs
-            .into_par_iter()
-            .map(|(tx_idx, parsed_tx_data)| {
-                let tx = &txs[tx_idx];
-                let input_tx_nums = tx
-                    .inputs
-                    .iter()
-                    .map(|input| {
-                        if input.prev_out.is_coinbase() {
-                            return Ok(None);
-                        }
-                        Ok(Some(match txid_map.get(&input.prev_out.txid) {
-                            Some(&tx_num) => tx_num,
-                            None => tx_reader
-                                .tx_num_by_txid(&input.prev_out.txid)?
-                                .ok_or_else(|| UnknownInputSpent(input.prev_out.clone()))?,
-                        }))
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                Ok((
-                    tx_idx,
-                    BatchSlpTx {
-                        tx,
-                        parsed_tx_data,
-                        input_tx_nums,
-                    },
-                ))
-            })
-            .collect()
-    }
-
-    fn fetch_known_slp_outputs(
-        &self,
-        batch_txs: &[(usize, BatchSlpTx)],
-    ) -> Result<HashMap<OutpointEntry, Option<SlpSpentOutput>>> {
-        batch_txs
-            .par_iter()
-            .flat_map(|(_, batch_tx)| {
-                let tx = &batch_tx.tx;
+        txs: &[UnhashedTx],
+        input_tx_nums: &[Vec<TxNum>],
+    ) -> Result<Vec<Vec<Option<SlpSpentOutput>>>> {
+        txs.par_iter()
+            .skip(1)
+            .zip(input_tx_nums)
+            .map(|(tx, tx_input_nums)| {
                 tx.inputs
                     .par_iter()
-                    .zip(&batch_tx.input_tx_nums)
+                    .zip(tx_input_nums)
                     .map(|(input, &input_tx_num)| {
-                        let input_tx_num = match input_tx_num {
-                            Some(input_tx_num) => input_tx_num,
-                            None => return Ok(None),
-                        };
-                        match self.fetch_slp_output(&input.prev_out, input_tx_num)? {
-                            Some(spent_output) => {
-                                let outpoint = OutpointEntry {
-                                    tx_num: input_tx_num,
-                                    out_idx: input.prev_out.out_idx,
-                                };
-                                Ok(Some((outpoint, Some(spent_output))))
-                            }
-                            None => Ok(None),
-                        }
+                        self.fetch_slp_output(input.prev_out.out_idx, input_tx_num)
                     })
-                    .filter_map(|result| result.transpose())
+                    .collect::<Result<Vec<_>>>()
             })
-            .collect::<Result<_>>()
+            .collect::<Result<Vec<_>>>()
     }
 
     fn fetch_slp_output(
         &self,
-        prev_out: &OutPoint,
+        out_idx: u32,
         input_tx_num: TxNum,
     ) -> Result<Option<SlpSpentOutput>> {
         let slp_tx_data = self
@@ -289,7 +239,7 @@ impl<'a> SlpWriter<'a> {
         };
         let ser_token = slp_tx_entry
             .output_tokens
-            .get(prev_out.out_idx as usize)
+            .get(out_idx as usize)
             .cloned()
             .unwrap_or_default();
         Ok(Some(SlpSpentOutput {
@@ -298,6 +248,62 @@ impl<'a> SlpWriter<'a> {
             token: ser_token.to_token(),
             group_token_id: group_token_id.map(Box::new),
         }))
+    }
+
+    fn build_batch_txs<'b>(
+        &self,
+        parsed_slp_txs: Vec<(usize, SlpParseData)>,
+        txs: &'b [UnhashedTx],
+        input_tx_nums: &[Vec<TxNum>],
+    ) -> Vec<(usize, BatchSlpTx<'b>)> {
+        parsed_slp_txs
+            .into_par_iter()
+            .map(|(tx_idx, parsed_tx_data)| {
+                let tx = &txs[tx_idx];
+                (
+                    tx_idx,
+                    BatchSlpTx {
+                        tx,
+                        parsed_tx_data,
+                        input_tx_nums: match tx_idx.checked_sub(1) {
+                            Some(input_tx_num_idx) => input_tx_nums[input_tx_num_idx]
+                                .iter()
+                                .map(|&input_tx_num| Some(input_tx_num))
+                                .collect::<Vec<_>>(),
+                            None => vec![None],
+                        },
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn build_known_slp_outputs(
+        &self,
+        batch_txs: &[(usize, BatchSlpTx)],
+        spent_slp_outputs: &[Vec<Option<SlpSpentOutput>>],
+    ) -> HashMap<OutpointEntry, Option<SlpSpentOutput>> {
+        batch_txs
+            .par_iter()
+            .flat_map(|&(tx_idx, ref batch_tx)| {
+                batch_tx
+                    .tx
+                    .inputs
+                    .par_iter()
+                    .zip(&batch_tx.input_tx_nums)
+                    .enumerate()
+                    .filter_map(move |(input_idx, (input, &input_tx_num))| {
+                        let input_tx_num = input_tx_num?;
+                        let spent_outputs = &spent_slp_outputs[tx_idx.checked_sub(1)?];
+                        let spent_output = spent_outputs[input_idx].clone()?;
+                        let outpoint = OutpointEntry {
+                            tx_num: input_tx_num,
+                            out_idx: input.prev_out.out_idx,
+                        };
+                        Some((outpoint, Some(spent_output)))
+                    })
+            })
+            .collect()
     }
 
     fn insert_new_tokens<'b>(
@@ -726,7 +732,10 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rocksdb::WriteBatch;
 
-    use crate::{BlockHeight, BlockTxs, Db, SlpReader, SlpWriter, TxEntry, TxNum, TxWriter};
+    use crate::{
+        input_tx_nums::fetch_input_tx_nums, BlockHeight, BlockTxs, Db, SlpReader, SlpWriter,
+        TxEntry, TxNum, TxWriter,
+    };
 
     enum Outcome {
         NotSlp,
@@ -1036,7 +1045,14 @@ mod tests {
         let mut first_tx_num = 0;
         for (block_height, (txids, txs, outcomes)) in blocks.into_iter().enumerate() {
             let mut batch = WriteBatch::default();
-            slp_writer.insert_block_txs(&mut batch, first_tx_num, &txs, |idx| &txids[idx])?;
+            let input_tx_nums = fetch_input_tx_nums(&db, first_tx_num, |idx| &txids[idx], &txs)?;
+            slp_writer.insert_block_txs(
+                &mut batch,
+                first_tx_num,
+                &txs,
+                |idx| &txids[idx],
+                &input_tx_nums,
+            )?;
             let block_txs = txids
                 .iter()
                 .cloned()
@@ -1147,7 +1163,13 @@ mod tests {
             }
             // Add block back in again before continuing
             let mut batch = WriteBatch::default();
-            slp_writer.insert_block_txs(&mut batch, first_tx_num, &txs, |idx| &txids[idx])?;
+            slp_writer.insert_block_txs(
+                &mut batch,
+                first_tx_num,
+                &txs,
+                |idx| &txids[idx],
+                &input_tx_nums,
+            )?;
             db.write_batch(batch)?;
             first_tx_num += txids.len() as TxNum;
         }
