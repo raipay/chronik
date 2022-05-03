@@ -48,7 +48,7 @@ struct TokenStatsData {
     total_burned: I128<LE>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TokenStats {
     // Total number of coins minted via GENESIS or MINT
     pub total_minted: i128,

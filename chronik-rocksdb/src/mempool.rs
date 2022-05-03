@@ -35,8 +35,8 @@ impl<'a> MempoolWriter<'a> {
     }
 
     pub fn delete_mempool_tx(&mut self, txid: &Sha256d, mode: MempoolDeleteMode) -> Result<()> {
-        self.mempool_slp.delete_mempool_tx(txid);
-        self.mempool.delete_mempool_tx(txid, mode)?;
+        let tx = self.mempool.delete_mempool_tx(txid, mode)?;
+        self.mempool_slp.delete_mempool_tx(self.db, txid, &tx)?;
         Ok(())
     }
 
