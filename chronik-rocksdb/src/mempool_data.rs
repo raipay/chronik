@@ -159,7 +159,11 @@ impl MempoolData {
         Ok(())
     }
 
-    pub fn delete_mempool_tx(&mut self, txid: &Sha256d, mode: MempoolDeleteMode) -> Result<()> {
+    pub fn delete_mempool_tx(
+        &mut self,
+        txid: &Sha256d,
+        mode: MempoolDeleteMode,
+    ) -> Result<UnhashedTx> {
         let MempoolTxEntry {
             tx,
             spent_coins,
@@ -252,7 +256,7 @@ impl MempoolData {
                 }
             }
         }
-        Ok(())
+        Ok(tx)
     }
 
     pub fn tx(&self, txid: &Sha256d) -> Option<&MempoolTxEntry> {

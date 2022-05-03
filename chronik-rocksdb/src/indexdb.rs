@@ -104,7 +104,8 @@ impl IndexDb {
         txid: &Sha256d,
         tx: &UnhashedTx,
     ) -> Result<std::result::Result<SlpValidTxData, SlpError>> {
-        data.mempool_slp.validate_slp_tx(&self.db, txid, tx)
+        let spent_outputs = data.mempool_slp.collect_spent_outputs(&self.db, tx)?;
+        data.mempool_slp.validate_slp_tx(txid, tx, &spent_outputs)
     }
 
     pub fn insert_block<'b>(
