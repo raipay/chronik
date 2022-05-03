@@ -243,7 +243,7 @@ impl IndexDb {
             block_spent_output_fn,
         )?;
         spends_writer.delete_block_txs(&mut batch, first_tx_num, txs, &input_tx_nums)?;
-        slp_writer.delete_block_txs(&mut batch, first_tx_num, txs, &txids_fn)?;
+        slp_writer.delete_block_txs(&mut batch, first_tx_num, txs, &txids_fn, &input_tx_nums)?;
         self.db.write_batch(batch)?;
         Ok(())
     }
