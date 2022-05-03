@@ -1,12 +1,12 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bitcoinsuite_core::{OutPoint, Sha256d, UnhashedTx};
 use bitcoinsuite_error::{ErrorMeta, Result};
 use bitcoinsuite_slp::{
-    parse_slp_tx, SlpBurn, SlpError, SlpGenesisInfo, SlpParseData, SlpSpentOutput, SlpToken,
-    SlpTokenType, SlpTxData, SlpTxType, SlpValidTxData, TokenId,
+    parse_slp_tx, SlpAmount, SlpBurn, SlpError, SlpGenesisInfo, SlpParseData, SlpSpentOutput,
+    SlpToken, SlpTokenType, SlpTxData, SlpTxType, SlpValidTxData, TokenId,
 };
-use byteorder::BE;
+use byteorder::{BE, LE};
 use rayon::iter::{
     Either, IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator,
     ParallelIterator,
@@ -14,11 +14,11 @@ use rayon::iter::{
 use rocksdb::{ColumnFamilyDescriptor, IteratorMode, Options, WriteBatch};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use zerocopy::{AsBytes, U32};
+use zerocopy::{AsBytes, FromBytes, Unaligned, I128, U32};
 
 use crate::{
-    data::interpret, validate_slp_batch, BatchSlpTx, Db, OutpointEntry, SlpInvalidTxData, TxNum,
-    TxNumZC, CF,
+    data::interpret, validate_slp_batch, BatchSlpTx, Db, OutpointEntry, SlpInvalidTxData,
+    SlpValidHashMap, TxNum, TxNumZC, CF,
 };
 
 pub const CF_SLP_TOKEN_ID_BY_NUM: &str = "slp_token_id_by_num";
@@ -26,6 +26,7 @@ pub const CF_SLP_TOKEN_NUM_BY_ID: &str = "slp_token_num_by_id";
 pub const CF_SLP_TOKEN_METADATA: &str = "slp_token_metadata";
 pub const CF_SLP_TX_DATA: &str = "slp_tx_data";
 pub const CF_SLP_TX_INVALID_MESSAGE: &str = "slp_tx_invalid_message";
+pub const CF_SLP_TOKEN_STATS: &str = "slp_token_stats";
 
 type TokenNum = u32;
 type TokenNumZC = U32<BE>;
@@ -36,6 +37,28 @@ pub struct SlpWriter<'a> {
 
 pub struct SlpReader<'a> {
     db: &'a Db,
+}
+
+#[derive(Debug, Clone, FromBytes, AsBytes, Unaligned, PartialEq, Eq, Default)]
+#[repr(C)]
+struct TokenStatsData {
+    // Total number of coins minted via GENESIS or MINT
+    total_minted: I128<LE>,
+    // Total number of coins burned (in any way)
+    total_burned: I128<LE>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenStats {
+    // Total number of coins minted via GENESIS or MINT
+    pub total_minted: i128,
+    // Total number of coins burned (in any way)
+    pub total_burned: i128,
+}
+
+struct SlpInputToken<'t> {
+    token_id: &'t TokenId,
+    token: &'t SlpToken,
 }
 
 #[derive(Debug, Error, ErrorMeta)]
@@ -67,6 +90,10 @@ pub enum SlpWriterError {
     #[critical()]
     #[error("Inconsistent slp entry, tx {0} has null token")]
     InconsistentDbNullTokenGroupId(TxNum),
+
+    #[critical()]
+    #[error("Inconsistent token_num_by_id, token {0:?} does not exist")]
+    InconsistentTokenNumById(TokenId),
 }
 
 use self::SlpWriterError::*;
@@ -124,6 +151,10 @@ impl<'a> SlpWriter<'a> {
             CF_SLP_TX_INVALID_MESSAGE,
             Options::default(),
         ));
+        columns.push(ColumnFamilyDescriptor::new(
+            CF_SLP_TOKEN_STATS,
+            Options::default(),
+        ));
     }
 
     pub fn new(db: &'a Db) -> Result<Self> {
@@ -144,8 +175,9 @@ impl<'a> SlpWriter<'a> {
         input_tx_nums: &[Vec<TxNum>],
     ) -> Result<()> {
         let (parsed_slp_txs, invalid_parsed_slp_txs) = Self::parse_block_slp_txs(txs, &txid_fn);
-        // Short-circuit for block without any SLP txs
-        if parsed_slp_txs.is_empty() && invalid_parsed_slp_txs.is_empty() {
+        let next_token_num = self.get_next_token_num()?;
+        // Short-circuit for block without any SLP txs, and if there's no tokens yet
+        if parsed_slp_txs.is_empty() && invalid_parsed_slp_txs.is_empty() && next_token_num == 0 {
             return Ok(());
         }
         // Fetch the SLP state of all inputs
@@ -165,6 +197,17 @@ impl<'a> SlpWriter<'a> {
         let mut token_num_by_id = self.insert_new_tokens(batch, valid_slp_txs.values())?;
         // Insert SLP txs
         self.insert_new_valid_txs(batch, valid_slp_txs.iter(), &mut token_num_by_id)?;
+        // Insert token stats
+        self.update_token_stats(
+            batch,
+            first_tx_num,
+            txs,
+            &valid_slp_txs,
+            input_tx_nums,
+            &spent_slp_outputs,
+            &mut token_num_by_id,
+            |a, b| a + b,
+        )?;
         // Insert invalid SLP txs
         self.insert_new_invalid_txs(batch, first_tx_num, invalid_parsed_slp_txs, invalid_slp_txs);
         Ok(())
@@ -340,6 +383,131 @@ impl<'a> SlpWriter<'a> {
         Ok(token_num_by_id)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn update_token_stats(
+        &self,
+        batch: &mut WriteBatch,
+        first_tx_num: TxNum,
+        txs: &[UnhashedTx],
+        valid_txs: &SlpValidHashMap,
+        input_tx_nums: &[Vec<TxNum>],
+        spent_slp_outputs: &[Vec<Option<SlpSpentOutput>>],
+        token_num_by_id: &mut HashMap<[u8; 32], TokenNum>,
+        op: impl Fn(i128, i128) -> i128,
+    ) -> Result<()> {
+        let mut minted = HashMap::new();
+        let mut burned = HashMap::new();
+        for (tx_idx, tx) in txs.iter().enumerate() {
+            let tx_num = first_tx_num + tx_idx as TxNum;
+            let slp_token_inputs = match tx_idx {
+                0 => vec![None],
+                _ => tx
+                    .inputs
+                    .iter()
+                    .zip(&input_tx_nums[tx_idx - 1])
+                    .zip(&spent_slp_outputs[tx_idx - 1])
+                    .map(
+                        |((input, &input_tx_num), spent_slp_output)| match spent_slp_output {
+                            Some(spent_slp_output) => Some(SlpInputToken {
+                                token_id: &spent_slp_output.token_id,
+                                token: &spent_slp_output.token,
+                            }),
+                            None => valid_txs.get(&input_tx_num).and_then(|slp| {
+                                Some(SlpInputToken {
+                                    token_id: &slp.slp_tx_data.token_id,
+                                    token: slp
+                                        .slp_tx_data
+                                        .output_tokens
+                                        .get(input.prev_out.out_idx as usize)?,
+                                })
+                            }),
+                        },
+                    )
+                    .collect::<Vec<_>>(),
+            };
+            let valid_slp_tx = valid_txs.get(&tx_num);
+            self.calc_token_supply_delta(&mut minted, &mut burned, &slp_token_inputs, valid_slp_tx);
+        }
+        let stats_token_ids = burned.keys().chain(minted.keys()).collect::<HashSet<_>>();
+        for token_id in stats_token_ids {
+            let token_id = TokenId::from_slice_be(token_id)?;
+            let token_num = self
+                .get_token_num_by_token_id(token_num_by_id, &token_id)?
+                .ok_or_else(|| InconsistentTokenNumById(token_id.clone()))?;
+            let token_num_zc = TokenNumZC::new(token_num);
+            let token_stats_data = self
+                .db
+                .get(self.cf_slp_token_stats(), token_num_zc.as_bytes())?;
+            let mut token_stats_data = match token_stats_data {
+                Some(token_stats_data) => interpret::<TokenStatsData>(&token_stats_data)?.clone(),
+                None => TokenStatsData::default(),
+            };
+            if let Some(&mint_amount) = minted.get(token_id.as_slice_be()) {
+                let new_total_minted = op(token_stats_data.total_minted.get(), mint_amount);
+                token_stats_data.total_minted = new_total_minted.into();
+            }
+            if let Some(&burn_amount) = burned.get(token_id.as_slice_be()) {
+                let new_total_burned = op(token_stats_data.total_burned.get(), burn_amount);
+                token_stats_data.total_burned = new_total_burned.into();
+            }
+            batch.put_cf(
+                self.cf_slp_token_stats(),
+                token_num_zc.as_bytes(),
+                token_stats_data.as_bytes(),
+            );
+        }
+        Ok(())
+    }
+
+    fn calc_token_supply_delta(
+        &self,
+        minted: &mut HashMap<[u8; 32], i128>,
+        burned: &mut HashMap<[u8; 32], i128>,
+        slp_token_inputs: &[Option<SlpInputToken<'_>>],
+        valid_slp_tx: Option<&SlpValidTxData>,
+    ) {
+        let null_token = TokenId::new(Sha256d::new([0; 32]));
+        match valid_slp_tx {
+            // SEND already has the burns calculated
+            Some(valid_slp_tx) if valid_slp_tx.slp_tx_data.slp_tx_type == SlpTxType::Send => {
+                for burn in valid_slp_tx.slp_burns.iter().flatten() {
+                    let burned_amount = burned.entry(burn.token_id.token_id_be()).or_default();
+                    *burned_amount += burn.token.amount.base_amount();
+                }
+                return; // SEND never mints
+            }
+            // Everything except SEND burns all inputs
+            // Note: We consider the required NFT1Parent input for NFT1Child a burn here
+            _ => {
+                for spent_output in slp_token_inputs.iter().flatten() {
+                    if spent_output.token.amount == SlpAmount::ZERO
+                        || spent_output.token_id == &null_token
+                    {
+                        continue;
+                    }
+                    let burned_amount = burned
+                        .entry(spent_output.token_id.token_id_be())
+                        .or_default();
+                    *burned_amount += spent_output.token.amount.base_amount();
+                }
+            }
+        };
+        let valid_slp_tx = match valid_slp_tx {
+            Some(valid_slp_tx) => valid_slp_tx,
+            None => return,
+        };
+        let slp_tx_data = &valid_slp_tx.slp_tx_data;
+        // GENESIS and MINT can mint
+        if let SlpTxType::Genesis(_) | SlpTxType::Mint = &slp_tx_data.slp_tx_type {
+            for token in &slp_tx_data.output_tokens {
+                let minted_amount = minted
+                    .entry(slp_tx_data.token_id.token_id_be())
+                    .or_default();
+                *minted_amount += token.amount.base_amount();
+            }
+        }
+    }
+
     fn insert_new_valid_txs<'b>(
         &self,
         batch: &mut WriteBatch,
@@ -439,6 +607,7 @@ impl<'a> SlpWriter<'a> {
         first_tx_num: TxNum,
         txs: &[UnhashedTx],
         txid_fn: impl Fn(usize) -> &'b Sha256d + Send + Sync,
+        input_tx_nums: &[Vec<TxNum>],
     ) -> Result<()> {
         let (delete_valid_txs, delete_invalid_txs): (Vec<Result<(_, _)>>, Vec<TxNum>) = txs
             .par_iter()
@@ -457,18 +626,42 @@ impl<'a> SlpWriter<'a> {
                 }
             })
             .partition_map(|either| either);
+        // Fetch the SLP state of all inputs
+        let spent_slp_outputs = self.fetch_spent_slp_outputs(txs, input_tx_nums)?;
         let delete_valid_txs = delete_valid_txs.into_iter().collect::<Result<Vec<_>>>()?;
+        let mut valid_slp_txs = HashMap::with_capacity(delete_valid_txs.len());
+        let mut token_num_by_id = HashMap::new();
         for (tx_num, delete_token) in delete_valid_txs {
-            let tx_num = TxNumZC::new(tx_num);
-            batch.delete_cf(self.cf_slp_tx_data(), tx_num.as_bytes());
-            batch.delete_cf(self.cf_slp_tx_invalid_message(), tx_num.as_bytes());
-            if let Some((delete_token_num, delete_token_id)) = delete_token {
-                let delete_token_num = TokenNumZC::new(delete_token_num);
-                batch.delete_cf(self.cf_slp_token_id_by_num(), delete_token_num.as_bytes());
-                batch.delete_cf(self.cf_slp_token_metadata(), delete_token_num.as_bytes());
-                batch.delete_cf(self.cf_slp_token_num_by_id(), delete_token_id.as_slice_be());
+            let tx_num_zc = TxNumZC::new(tx_num);
+            batch.delete_cf(self.cf_slp_tx_data(), tx_num_zc.as_bytes());
+            batch.delete_cf(self.cf_slp_tx_invalid_message(), tx_num_zc.as_bytes());
+            if let Some((delete_token_num, delete_slp)) = delete_token {
+                let delete_token_num_zc = TokenNumZC::new(delete_token_num);
+                batch.delete_cf(
+                    self.cf_slp_token_id_by_num(),
+                    delete_token_num_zc.as_bytes(),
+                );
+                batch.delete_cf(self.cf_slp_token_metadata(), delete_token_num_zc.as_bytes());
+                batch.delete_cf(
+                    self.cf_slp_token_num_by_id(),
+                    delete_slp.slp_tx_data.token_id.as_slice_be(),
+                );
+                token_num_by_id
+                    .entry(delete_slp.slp_tx_data.token_id.token_id_be())
+                    .or_insert(delete_token_num);
+                valid_slp_txs.insert(tx_num, delete_slp);
             }
         }
+        self.update_token_stats(
+            batch,
+            first_tx_num,
+            txs,
+            &valid_slp_txs,
+            input_tx_nums,
+            &spent_slp_outputs,
+            &mut token_num_by_id,
+            |a, b| a - b,
+        )?;
         for tx_num in delete_invalid_txs {
             let tx_num = TxNumZC::new(tx_num);
             batch.delete_cf(self.cf_slp_tx_invalid_message(), tx_num.as_bytes());
@@ -480,18 +673,14 @@ impl<'a> SlpWriter<'a> {
         &self,
         tx_num: TxNum,
         slp_parse_data: &SlpParseData,
-    ) -> Result<(TxNum, Option<(TokenNum, TokenId)>)> {
-        let mut delete_token_num = None;
-        if let SlpTxType::Genesis(_) = slp_parse_data.slp_tx_type {
-            if let Some(token_num) = self.db.get(
-                self.cf_slp_token_num_by_id(),
-                slp_parse_data.token_id.as_slice_be(),
-            )? {
-                let token_num = interpret::<TokenNumZC>(&token_num)?.get();
-                delete_token_num = Some((token_num, slp_parse_data.token_id.clone()));
+    ) -> Result<(TxNum, Option<(TokenNum, SlpValidTxData)>)> {
+        let slp_reader = SlpReader::new(self.db)?;
+        if let Some(token_num) = slp_reader.token_num_by_id(&slp_parse_data.token_id)? {
+            if let Some(slp) = slp_reader.slp_data_by_tx_num(tx_num)? {
+                return Ok((tx_num, Some((token_num, slp))));
             }
         }
-        Ok((tx_num, delete_token_num))
+        Ok((tx_num, None))
     }
 
     fn get_next_token_num(&self) -> Result<TokenNum> {
@@ -546,6 +735,10 @@ impl<'a> SlpWriter<'a> {
 
     fn cf_slp_tx_invalid_message(&self) -> &CF {
         self.db.cf(CF_SLP_TX_INVALID_MESSAGE).unwrap()
+    }
+
+    fn cf_slp_token_stats(&self) -> &CF {
+        self.db.cf(CF_SLP_TOKEN_STATS).unwrap()
     }
 }
 
@@ -659,6 +852,21 @@ impl<'a> SlpReader<'a> {
         }
     }
 
+    pub fn token_stats_by_token_num(&self, token_num: TokenNum) -> Result<Option<TokenStats>> {
+        let token_stats_data = self.db.get(
+            self.cf_slp_token_stats(),
+            TokenNumZC::new(token_num).as_bytes(),
+        )?;
+        let token_stats_data = match &token_stats_data {
+            Some(token_stats_data) => interpret::<TokenStatsData>(token_stats_data)?,
+            None => return Ok(None),
+        };
+        Ok(Some(TokenStats {
+            total_burned: token_stats_data.total_burned.get(),
+            total_minted: token_stats_data.total_minted.get(),
+        }))
+    }
+
     fn cf_slp_token_num_by_id(&self) -> &CF {
         self.db.cf(CF_SLP_TOKEN_NUM_BY_ID).unwrap()
     }
@@ -673,6 +881,10 @@ impl<'a> SlpReader<'a> {
 
     fn cf_slp_tx_invalid_message(&self) -> &CF {
         self.db.cf(CF_SLP_TX_INVALID_MESSAGE).unwrap()
+    }
+
+    fn cf_slp_token_stats(&self) -> &CF {
+        self.db.cf(CF_SLP_TOKEN_STATS).unwrap()
     }
 }
 
@@ -733,7 +945,7 @@ mod tests {
 
     use crate::{
         input_tx_nums::fetch_input_tx_nums, BlockHeight, BlockTxs, Db, SlpReader, SlpWriter,
-        TxEntry, TxNum, TxWriter,
+        TokenStats, TxEntry, TxNum, TxWriter,
     };
 
     enum Outcome {
@@ -746,294 +958,366 @@ mod tests {
     #[test]
     fn test_slp_writer() -> Result<()> {
         let blocks = [
-            make_block([
-                make_tx(
-                    (1, [(0, 0xffff_ffff)], 3),
-                    Script::opreturn(&[&[0; 100]]),
-                    Outcome::NotSlp,
-                ),
-                // GENESIS: mint fungible token
-                make_tx(
-                    (2, [(1, 1)], 3),
-                    genesis_opreturn(
-                        &SlpGenesisInfo::default(),
-                        SlpTokenType::Fungible,
-                        Some(2),
-                        10,
+            make_block(
+                [
+                    make_tx(
+                        (1, [(0, 0xffff_ffff)], 3),
+                        Script::opreturn(&[&[0; 100]]),
+                        Outcome::NotSlp,
                     ),
-                    Outcome::Valid(SlpTxData {
-                        input_tokens: vec![SlpToken::EMPTY],
-                        output_tokens: vec![
-                            SlpToken::EMPTY,
-                            SlpToken::amount(10),
-                            SlpToken::MINT_BATON,
-                        ],
-                        slp_token_type: SlpTokenType::Fungible,
-                        slp_tx_type: SlpTxType::Genesis(SlpGenesisInfo::default().into()),
-                        token_id: TokenId::new(make_hash(2)),
-                        group_token_id: None,
-                    }),
-                ),
-                // MINT fungible tokens
-                make_tx(
-                    (3, [(2, 2)], 4),
-                    mint_opreturn(
-                        &TokenId::new(make_hash(2)),
-                        SlpTokenType::Fungible,
-                        Some(3),
-                        4,
+                    // GENESIS: mint fungible token
+                    make_tx(
+                        (2, [(1, 1)], 3),
+                        genesis_opreturn(
+                            &SlpGenesisInfo::default(),
+                            SlpTokenType::Fungible,
+                            Some(2),
+                            10,
+                        ),
+                        Outcome::Valid(SlpTxData {
+                            input_tokens: vec![SlpToken::EMPTY],
+                            output_tokens: vec![
+                                SlpToken::EMPTY,
+                                SlpToken::amount(10),
+                                SlpToken::MINT_BATON,
+                            ],
+                            slp_token_type: SlpTokenType::Fungible,
+                            slp_tx_type: SlpTxType::Genesis(SlpGenesisInfo::default().into()),
+                            token_id: TokenId::new(make_hash(2)),
+                            group_token_id: None,
+                        }),
                     ),
-                    Outcome::Valid(SlpTxData {
-                        input_tokens: vec![SlpToken::MINT_BATON],
-                        output_tokens: vec![
-                            SlpToken::EMPTY,
-                            SlpToken::amount(4),
-                            SlpToken::EMPTY,
-                            SlpToken::MINT_BATON,
-                        ],
-                        slp_token_type: SlpTokenType::Fungible,
-                        slp_tx_type: SlpTxType::Mint,
-                        token_id: TokenId::new(make_hash(2)),
-                        group_token_id: None,
-                    }),
-                ),
-                // SEND fungible token
-                make_tx(
-                    (4, [(2, 1), (3, 1)], 3),
-                    send_opreturn(
-                        &TokenId::new(make_hash(2)),
-                        SlpTokenType::Fungible,
-                        &[SlpAmount::new(11), SlpAmount::new(3)],
+                    // MINT fungible tokens
+                    make_tx(
+                        (3, [(2, 2)], 4),
+                        mint_opreturn(
+                            &TokenId::new(make_hash(2)),
+                            SlpTokenType::Fungible,
+                            Some(3),
+                            4,
+                        ),
+                        Outcome::Valid(SlpTxData {
+                            input_tokens: vec![SlpToken::MINT_BATON],
+                            output_tokens: vec![
+                                SlpToken::EMPTY,
+                                SlpToken::amount(4),
+                                SlpToken::EMPTY,
+                                SlpToken::MINT_BATON,
+                            ],
+                            slp_token_type: SlpTokenType::Fungible,
+                            slp_tx_type: SlpTxType::Mint,
+                            token_id: TokenId::new(make_hash(2)),
+                            group_token_id: None,
+                        }),
                     ),
-                    Outcome::Valid(SlpTxData {
-                        input_tokens: vec![SlpToken::amount(10), SlpToken::amount(4)],
-                        output_tokens: vec![
-                            SlpToken::EMPTY,
-                            SlpToken::amount(11),
-                            SlpToken::amount(3),
-                        ],
-                        slp_token_type: SlpTokenType::Fungible,
-                        slp_tx_type: SlpTxType::Send,
-                        token_id: TokenId::new(make_hash(2)),
-                        group_token_id: None,
-                    }),
-                ),
-            ]),
-            make_block([
-                make_tx(
-                    (11, [(0, 0xffff_ffff)], 7),
-                    Script::opreturn(&[&[0; 100]]),
-                    Outcome::NotSlp,
-                ),
-                // GENESIS: mint NFT1 group token
-                make_tx(
-                    (12, [(1, 2)], 3),
-                    genesis_opreturn(
-                        &SlpGenesisInfo::default(),
-                        SlpTokenType::Nft1Group,
-                        Some(2),
-                        100,
+                    // SEND fungible token
+                    make_tx(
+                        (4, [(2, 1), (3, 1)], 3),
+                        send_opreturn(
+                            &TokenId::new(make_hash(2)),
+                            SlpTokenType::Fungible,
+                            &[SlpAmount::new(11), SlpAmount::new(3)],
+                        ),
+                        Outcome::Valid(SlpTxData {
+                            input_tokens: vec![SlpToken::amount(10), SlpToken::amount(4)],
+                            output_tokens: vec![
+                                SlpToken::EMPTY,
+                                SlpToken::amount(11),
+                                SlpToken::amount(3),
+                            ],
+                            slp_token_type: SlpTokenType::Fungible,
+                            slp_tx_type: SlpTxType::Send,
+                            token_id: TokenId::new(make_hash(2)),
+                            group_token_id: None,
+                        }),
                     ),
-                    Outcome::Valid(SlpTxData {
-                        input_tokens: vec![SlpToken::EMPTY],
-                        output_tokens: vec![
-                            SlpToken::EMPTY,
-                            SlpToken::amount(100),
-                            SlpToken::MINT_BATON,
-                        ],
-                        slp_token_type: SlpTokenType::Nft1Group,
-                        slp_tx_type: SlpTxType::Genesis(SlpGenesisInfo::default().into()),
-                        token_id: TokenId::new(make_hash(12)),
-                        group_token_id: None,
-                    }),
-                ),
-                // GENESIS: mint another fungible token
-                make_tx(
-                    (13, [(11, 1)], 3),
-                    genesis_opreturn(
-                        &SlpGenesisInfo::default(),
-                        SlpTokenType::Fungible,
-                        None,
-                        1000,
+                ],
+                [(2, (14, 0))],
+            ),
+            make_block(
+                [
+                    make_tx(
+                        (11, [(0, 0xffff_ffff)], 7),
+                        Script::opreturn(&[&[0; 100]]),
+                        Outcome::NotSlp,
                     ),
-                    Outcome::Valid(SlpTxData {
-                        input_tokens: vec![SlpToken::EMPTY],
-                        output_tokens: vec![
-                            SlpToken::EMPTY,
-                            SlpToken::amount(1000),
-                            SlpToken::EMPTY,
-                        ],
-                        slp_token_type: SlpTokenType::Fungible,
-                        slp_tx_type: SlpTxType::Genesis(SlpGenesisInfo::default().into()),
-                        token_id: TokenId::new(make_hash(13)),
-                        group_token_id: None,
-                    }),
-                ),
-                // Invalid tx: SEND fungible token, but input amount < output amount
-                make_tx(
-                    (14, [(4, 2), (11, 2)], 1),
-                    send_opreturn(
-                        &TokenId::new(make_hash(2)),
-                        SlpTokenType::Fungible,
-                        &[SlpAmount::new(2), SlpAmount::new(2)],
+                    // GENESIS: mint NFT1 group token
+                    make_tx(
+                        (12, [(1, 2)], 3),
+                        genesis_opreturn(
+                            &SlpGenesisInfo::default(),
+                            SlpTokenType::Nft1Group,
+                            Some(2),
+                            100,
+                        ),
+                        Outcome::Valid(SlpTxData {
+                            input_tokens: vec![SlpToken::EMPTY],
+                            output_tokens: vec![
+                                SlpToken::EMPTY,
+                                SlpToken::amount(100),
+                                SlpToken::MINT_BATON,
+                            ],
+                            slp_token_type: SlpTokenType::Nft1Group,
+                            slp_tx_type: SlpTxType::Genesis(SlpGenesisInfo::default().into()),
+                            token_id: TokenId::new(make_hash(12)),
+                            group_token_id: None,
+                        }),
                     ),
-                    Outcome::Invalid(SlpError::OutputSumExceedInputSum {
-                        input_sum: SlpAmount::new(3),
-                        output_sum: SlpAmount::new(4),
-                    }),
-                ),
-                // SEND NFT1 group token to two outputs
-                make_tx(
-                    (15, [(12, 1), (3, 3)], 2),
-                    send_opreturn(
-                        &TokenId::new(make_hash(12)),
-                        SlpTokenType::Nft1Group,
-                        &[SlpAmount::new(1), SlpAmount::new(50)],
+                    // GENESIS: mint another fungible token
+                    make_tx(
+                        (13, [(11, 1)], 3),
+                        genesis_opreturn(
+                            &SlpGenesisInfo::default(),
+                            SlpTokenType::Fungible,
+                            None,
+                            1000,
+                        ),
+                        Outcome::Valid(SlpTxData {
+                            input_tokens: vec![SlpToken::EMPTY],
+                            output_tokens: vec![
+                                SlpToken::EMPTY,
+                                SlpToken::amount(1000),
+                                SlpToken::EMPTY,
+                            ],
+                            slp_token_type: SlpTokenType::Fungible,
+                            slp_tx_type: SlpTxType::Genesis(SlpGenesisInfo::default().into()),
+                            token_id: TokenId::new(make_hash(13)),
+                            group_token_id: None,
+                        }),
                     ),
-                    Outcome::ValidBurn(
-                        SlpTxData {
-                            input_tokens: vec![SlpToken::amount(100), SlpToken::EMPTY],
+                    // Invalid tx: SEND fungible token, but input amount < output amount
+                    make_tx(
+                        (14, [(4, 2), (11, 2)], 1),
+                        send_opreturn(
+                            &TokenId::new(make_hash(2)),
+                            SlpTokenType::Fungible,
+                            &[SlpAmount::new(2), SlpAmount::new(2)],
+                        ),
+                        Outcome::Invalid(SlpError::OutputSumExceedInputSum {
+                            input_sum: SlpAmount::new(3),
+                            output_sum: SlpAmount::new(4),
+                        }),
+                    ),
+                    // SEND NFT1 group token to two outputs
+                    make_tx(
+                        (15, [(12, 1), (3, 3)], 2),
+                        send_opreturn(
+                            &TokenId::new(make_hash(12)),
+                            SlpTokenType::Nft1Group,
+                            &[SlpAmount::new(1), SlpAmount::new(50)],
+                        ),
+                        Outcome::ValidBurn(
+                            SlpTxData {
+                                input_tokens: vec![SlpToken::amount(100), SlpToken::EMPTY],
+                                output_tokens: vec![
+                                    SlpToken::EMPTY,
+                                    SlpToken::amount(1),
+                                    SlpToken::amount(50),
+                                ],
+                                slp_token_type: SlpTokenType::Nft1Group,
+                                slp_tx_type: SlpTxType::Send,
+                                token_id: TokenId::new(make_hash(12)),
+                                group_token_id: None,
+                            },
+                            vec![
+                                Some(Box::new(SlpBurn {
+                                    token_id: TokenId::new(make_hash(12)),
+                                    token: SlpToken::amount(49),
+                                })),
+                                Some(Box::new(SlpBurn {
+                                    token_id: TokenId::new(make_hash(2)),
+                                    token: SlpToken::MINT_BATON,
+                                })),
+                            ],
+                        ),
+                    ),
+                    // GENESIS NFT1 child token based on NFT1 group token
+                    make_tx(
+                        (16, [(15, 1)], 3),
+                        genesis_opreturn(
+                            &SlpGenesisInfo::default(),
+                            SlpTokenType::Nft1Child,
+                            None,
+                            1,
+                        ),
+                        Outcome::Valid(SlpTxData {
+                            input_tokens: vec![SlpToken::amount(1)],
                             output_tokens: vec![
                                 SlpToken::EMPTY,
                                 SlpToken::amount(1),
-                                SlpToken::amount(50),
+                                SlpToken::EMPTY,
                             ],
-                            slp_token_type: SlpTokenType::Nft1Group,
-                            slp_tx_type: SlpTxType::Send,
-                            token_id: TokenId::new(make_hash(12)),
-                            group_token_id: None,
-                        },
-                        vec![
-                            Some(Box::new(SlpBurn {
-                                token_id: TokenId::new(make_hash(12)),
-                                token: SlpToken::amount(49),
-                            })),
-                            Some(Box::new(SlpBurn {
-                                token_id: TokenId::new(make_hash(2)),
-                                token: SlpToken::MINT_BATON,
-                            })),
-                        ],
-                    ),
-                ),
-                // GENESIS NFT1 child token based on NFT1 group token
-                make_tx(
-                    (16, [(15, 1)], 3),
-                    genesis_opreturn(&SlpGenesisInfo::default(), SlpTokenType::Nft1Child, None, 1),
-                    Outcome::Valid(SlpTxData {
-                        input_tokens: vec![SlpToken::amount(1)],
-                        output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(1), SlpToken::EMPTY],
-                        slp_token_type: SlpTokenType::Nft1Child,
-                        slp_tx_type: SlpTxType::Genesis(SlpGenesisInfo::default().into()),
-                        token_id: TokenId::new(make_hash(16)),
-                        group_token_id: Some(TokenId::new(make_hash(12)).into()),
-                    }),
-                ),
-            ]),
-            make_block([
-                // GENESIS in coinbase also allowed
-                make_tx(
-                    (21, [(0, 0xffff_ffff)], 2),
-                    genesis_opreturn(&SlpGenesisInfo::default(), SlpTokenType::Fungible, None, 1),
-                    Outcome::Valid(SlpTxData {
-                        input_tokens: vec![SlpToken::EMPTY],
-                        output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(1)],
-                        slp_token_type: SlpTokenType::Fungible,
-                        slp_tx_type: SlpTxType::Genesis(SlpGenesisInfo::default().into()),
-                        token_id: TokenId::new(make_hash(21)),
-                        group_token_id: None,
-                    }),
-                ),
-                // GENESIS NFT1 child across blocks
-                make_tx(
-                    (22, [(15, 2)], 2),
-                    genesis_opreturn(&SlpGenesisInfo::default(), SlpTokenType::Nft1Child, None, 1),
-                    Outcome::Valid(SlpTxData {
-                        input_tokens: vec![SlpToken::amount(50)],
-                        output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(1)],
-                        slp_token_type: SlpTokenType::Nft1Child,
-                        slp_tx_type: SlpTxType::Genesis(SlpGenesisInfo::default().into()),
-                        token_id: TokenId::new(make_hash(22)),
-                        group_token_id: Some(TokenId::new(make_hash(12)).into()),
-                    }),
-                ),
-                // Invalid SEND: Reversed token_id
-                make_tx(
-                    (23, [(4, 1)], 3),
-                    send_opreturn(
-                        &TokenId::new({
-                            let mut hash = make_hash(2).byte_array().array();
-                            hash.reverse();
-                            Sha256d::new(hash)
+                            slp_token_type: SlpTokenType::Nft1Child,
+                            slp_tx_type: SlpTxType::Genesis(SlpGenesisInfo::default().into()),
+                            token_id: TokenId::new(make_hash(16)),
+                            group_token_id: Some(TokenId::new(make_hash(12)).into()),
                         }),
-                        SlpTokenType::Fungible,
-                        &[SlpAmount::new(1)],
                     ),
-                    Outcome::Invalid(SlpError::OutputSumExceedInputSum {
-                        input_sum: SlpAmount::new(0),
-                        output_sum: SlpAmount::new(1),
-                    }),
-                ),
-            ]),
-            make_block([
-                make_tx(
-                    (31, [(0, 0xffff_ffff)], 5),
-                    Script::opreturn(&[&[0; 100]]),
-                    Outcome::NotSlp,
-                ),
-                // Not SLP: wrong LOKAD ID
-                make_tx(
-                    (32, [(11, 3)], 2),
-                    Script::opreturn(&[b"SLP", b"\x01"]),
-                    Outcome::NotSlp,
-                ),
-                // Invalid SLP: too few pushops
-                make_tx(
-                    (32, [(11, 4)], 2),
-                    Script::opreturn(&[b"SLP\0", b"\x01"]),
-                    Outcome::Invalid(SlpError::TooFewPushes {
-                        actual: 2,
-                        expected: 3,
-                    }),
-                ),
-                // Invalid SLP tx: invalid tx type "INVALID"
-                make_tx(
-                    (33, [(11, 5)], 2),
-                    Script::opreturn(&[b"SLP\0", b"\x01", b"INVALID"]),
-                    Outcome::Invalid(SlpError::InvalidTxType(b"INVALID".as_ref().into())),
-                ),
-                // Valid SLP tx but unknown token type 0xff
-                make_tx(
-                    (33, [(11, 6)], 2),
-                    Script::opreturn(&[b"SLP\0", b"\xff", b"INCOGNITO"]),
-                    Outcome::Valid(SlpTxData {
-                        input_tokens: vec![SlpToken::EMPTY],
-                        output_tokens: vec![SlpToken::EMPTY, SlpToken::EMPTY],
-                        slp_token_type: SlpTokenType::Unknown,
-                        slp_tx_type: SlpTxType::Unknown,
-                        token_id: TokenId::new(Sha256d::new([0; 32])),
-                        group_token_id: None,
-                    }),
-                ),
-                // Valid SLP tx but unknown token type 0xff, spending unknown token type
-                make_tx(
-                    (34, [(33, 1)], 2),
-                    Script::opreturn(&[b"SLP\0", b"\xff", b"INCOGNITO"]),
-                    Outcome::ValidBurn(
-                        SlpTxData {
+                ],
+                [
+                    (2, (14, 3)),    // burns 3 fungible tokens
+                    (12, (100, 50)), // burns 49 Nft1Group tokens, redeems 1
+                    (13, (1000, 0)), // new fungible token
+                    (16, (1, 0)),    // new Nft1Child token
+                ],
+            ),
+            make_block(
+                [
+                    // GENESIS in coinbase also allowed
+                    make_tx(
+                        (21, [(0, 0xffff_ffff)], 2),
+                        genesis_opreturn(
+                            &SlpGenesisInfo::default(),
+                            SlpTokenType::Fungible,
+                            None,
+                            1,
+                        ),
+                        Outcome::Valid(SlpTxData {
+                            input_tokens: vec![SlpToken::EMPTY],
+                            output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(1)],
+                            slp_token_type: SlpTokenType::Fungible,
+                            slp_tx_type: SlpTxType::Genesis(SlpGenesisInfo::default().into()),
+                            token_id: TokenId::new(make_hash(21)),
+                            group_token_id: None,
+                        }),
+                    ),
+                    // GENESIS NFT1 child across blocks
+                    make_tx(
+                        (22, [(15, 2)], 2),
+                        genesis_opreturn(
+                            &SlpGenesisInfo::default(),
+                            SlpTokenType::Nft1Child,
+                            None,
+                            1,
+                        ),
+                        Outcome::Valid(SlpTxData {
+                            input_tokens: vec![SlpToken::amount(50)],
+                            output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(1)],
+                            slp_token_type: SlpTokenType::Nft1Child,
+                            slp_tx_type: SlpTxType::Genesis(SlpGenesisInfo::default().into()),
+                            token_id: TokenId::new(make_hash(22)),
+                            group_token_id: Some(TokenId::new(make_hash(12)).into()),
+                        }),
+                    ),
+                    // Invalid SEND: Reversed token_id
+                    make_tx(
+                        (23, [(4, 1)], 3),
+                        send_opreturn(
+                            &TokenId::new({
+                                let mut hash = make_hash(2).byte_array().array();
+                                hash.reverse();
+                                Sha256d::new(hash)
+                            }),
+                            SlpTokenType::Fungible,
+                            &[SlpAmount::new(1)],
+                        ),
+                        Outcome::Invalid(SlpError::OutputSumExceedInputSum {
+                            input_sum: SlpAmount::new(0),
+                            output_sum: SlpAmount::new(1),
+                        }),
+                    ),
+                ],
+                [
+                    (2, (14, 14)),
+                    (12, (100, 100)), // burns remaining Nft1Group tokens
+                    (13, (1000, 0)),
+                    (16, (1, 0)),
+                    (21, (1, 0)),
+                    (22, (1, 0)),
+                ],
+            ),
+            make_block(
+                [
+                    make_tx(
+                        (31, [(0, 0xffff_ffff)], 5),
+                        Script::opreturn(&[&[0; 100]]),
+                        Outcome::NotSlp,
+                    ),
+                    // Not SLP: wrong LOKAD ID
+                    make_tx(
+                        (32, [(11, 3)], 2),
+                        Script::opreturn(&[b"SLP", b"\x01"]),
+                        Outcome::NotSlp,
+                    ),
+                    // Invalid SLP: too few pushops
+                    make_tx(
+                        (33, [(11, 4)], 2),
+                        Script::opreturn(&[b"SLP\0", b"\x01"]),
+                        Outcome::Invalid(SlpError::TooFewPushes {
+                            actual: 2,
+                            expected: 3,
+                        }),
+                    ),
+                    // Invalid SLP tx: invalid tx type "INVALID"
+                    make_tx(
+                        (34, [(11, 5)], 2),
+                        Script::opreturn(&[b"SLP\0", b"\x01", b"INVALID"]),
+                        Outcome::Invalid(SlpError::InvalidTxType(b"INVALID".as_ref().into())),
+                    ),
+                    // Valid SLP tx but unknown token type 0xff
+                    make_tx(
+                        (35, [(11, 6)], 2),
+                        Script::opreturn(&[b"SLP\0", b"\xff", b"INCOGNITO"]),
+                        Outcome::Valid(SlpTxData {
                             input_tokens: vec![SlpToken::EMPTY],
                             output_tokens: vec![SlpToken::EMPTY, SlpToken::EMPTY],
                             slp_token_type: SlpTokenType::Unknown,
                             slp_tx_type: SlpTxType::Unknown,
                             token_id: TokenId::new(Sha256d::new([0; 32])),
                             group_token_id: None,
-                        },
-                        vec![Some(Box::new(SlpBurn {
-                            token: SlpToken::EMPTY,
-                            token_id: TokenId::new(Sha256d::new([0; 32])),
-                        }))],
+                        }),
                     ),
-                ),
-            ]),
+                    // Valid SLP tx but unknown token type 0xff, spending unknown token type
+                    make_tx(
+                        (36, [(35, 1)], 2),
+                        Script::opreturn(&[b"SLP\0", b"\xff", b"INCOGNITO"]),
+                        Outcome::ValidBurn(
+                            SlpTxData {
+                                input_tokens: vec![SlpToken::EMPTY],
+                                output_tokens: vec![SlpToken::EMPTY, SlpToken::EMPTY],
+                                slp_token_type: SlpTokenType::Unknown,
+                                slp_tx_type: SlpTxType::Unknown,
+                                token_id: TokenId::new(Sha256d::new([0; 32])),
+                                group_token_id: None,
+                            },
+                            vec![Some(Box::new(SlpBurn {
+                                token: SlpToken::EMPTY,
+                                token_id: TokenId::new(Sha256d::new([0; 32])),
+                            }))],
+                        ),
+                    ),
+                ],
+                [
+                    (2, (14, 14)),
+                    (12, (100, 100)),
+                    (13, (1000, 0)),
+                    (16, (1, 0)),
+                    (21, (1, 0)),
+                    (22, (1, 0)),
+                ],
+            ),
+            make_block(
+                [
+                    make_tx(
+                        (41, [(0, 0xffff_ffff)], 1),
+                        Script::opreturn(&[&[0; 100]]),
+                        Outcome::NotSlp,
+                    ),
+                    make_tx(
+                        (42, [(13, 1)], 3),
+                        Script::opreturn(&[&[0; 100]]),
+                        Outcome::NotSlp,
+                    ),
+                ],
+                [
+                    (2, (14, 14)),
+                    (12, (100, 100)),
+                    (13, (1000, 1000)), // burns fungible tokens
+                    (16, (1, 0)),
+                    (21, (1, 0)),
+                    (22, (1, 0)),
+                ],
+            ),
         ];
         bitcoinsuite_error::install()?;
         let tempdir = tempdir::TempDir::new("slp-indexer-rocks--utxos")?;
@@ -1042,7 +1326,8 @@ mod tests {
         let slp_writer = SlpWriter::new(&db)?;
         let slp_reader = SlpReader::new(&db)?;
         let mut first_tx_num = 0;
-        for (block_height, (txids, txs, outcomes)) in blocks.into_iter().enumerate() {
+        let mut previous_token_stats: Option<Vec<(TokenId, TokenStats)>> = None;
+        for (block_height, (txids, txs, outcomes, token_stats)) in blocks.into_iter().enumerate() {
             let mut batch = WriteBatch::default();
             let input_tx_nums = fetch_input_tx_nums(&db, first_tx_num, |idx| &txids[idx], &txs)?;
             slp_writer.insert_block_txs(
@@ -1142,9 +1427,26 @@ mod tests {
                     }
                 }
             }
+            // Verify token stats
+            for (token_id, expected_stats) in &token_stats {
+                let token_num = slp_reader.token_num_by_id(token_id)?.unwrap();
+                let actual_stats = slp_reader.token_stats_by_token_num(token_num)?;
+                assert_eq!(
+                    Some(expected_stats.clone()),
+                    actual_stats,
+                    "for token_num {}",
+                    token_num
+                );
+            }
             // Delete block
             let mut batch = WriteBatch::default();
-            slp_writer.delete_block_txs(&mut batch, first_tx_num, &txs, |idx| &txids[idx])?;
+            slp_writer.delete_block_txs(
+                &mut batch,
+                first_tx_num,
+                &txs,
+                |idx| &txids[idx],
+                &input_tx_nums,
+            )?;
             db.write_batch(batch)?;
             for (tx_idx, outcome) in outcomes.iter().enumerate() {
                 let tx_num = first_tx_num + tx_idx as TxNum;
@@ -1160,6 +1462,20 @@ mod tests {
                 assert_eq!(result, None, "Expected no SLP for txid {}", txid);
                 assert_eq!(message, None, "Expected no error for txid {}", txid);
             }
+            if let Some(previous_token_stats) = &previous_token_stats {
+                // Verify previous token stats
+                for (token_id, expected_stats) in previous_token_stats {
+                    let token_num = slp_reader.token_num_by_id(token_id)?.unwrap();
+                    let actual_stats = slp_reader.token_stats_by_token_num(token_num)?;
+                    assert_eq!(
+                        Some(expected_stats.clone()),
+                        actual_stats,
+                        "for token_num {}",
+                        token_num
+                    );
+                }
+            }
+            previous_token_stats = Some(token_stats);
             // Add block back in again before continuing
             let mut batch = WriteBatch::default();
             slp_writer.insert_block_txs(
@@ -1175,15 +1491,34 @@ mod tests {
         Ok(())
     }
 
-    fn make_block<const N: usize>(
+    #[allow(clippy::type_complexity)]
+    fn make_block<const N: usize, const M: usize>(
         txs: [(Sha256d, UnhashedTx, Outcome); N],
-    ) -> (Vec<Sha256d>, Vec<UnhashedTx>, Vec<Outcome>) {
+        token_stats: [(u8, (i128, i128)); M],
+    ) -> (
+        Vec<Sha256d>,
+        Vec<UnhashedTx>,
+        Vec<Outcome>,
+        Vec<(TokenId, TokenStats)>,
+    ) {
         let (txids, rest): (Vec<_>, Vec<_>) = txs
             .into_iter()
             .map(|(txid, tx, outcome)| (txid, (tx, outcome)))
             .unzip();
         let (txs, outcomes): (Vec<_>, Vec<_>) = rest.into_iter().unzip();
-        (txids, txs, outcomes)
+        let token_stats = token_stats
+            .into_iter()
+            .map(|(token_byte, (mint, burn))| {
+                (
+                    TokenId::new(make_hash(token_byte)),
+                    TokenStats {
+                        total_minted: mint,
+                        total_burned: burn,
+                    },
+                )
+            })
+            .collect();
+        (txids, txs, outcomes, token_stats)
     }
 
     fn make_tx<const N: usize>(
