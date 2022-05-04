@@ -13,19 +13,20 @@ use bitcoinsuite_core::{
 use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
 use bitcoinsuite_error::Result;
 use bitcoinsuite_slp::{
-    genesis_opreturn, send_opreturn, RichTx, RichTxBlock, RichUtxo, SlpAmount, SlpGenesisInfo,
-    SlpOutput, SlpToken, SlpTokenType, SlpTxData, SlpTxType, SlpValidTxData, TokenId,
+    genesis_opreturn, send_opreturn, RichTx, RichTxBlock, RichUtxo, SlpAmount, SlpBurn,
+    SlpGenesisInfo, SlpOutput, SlpToken, SlpTokenType, SlpTxData, SlpTxType, SlpValidTxData,
+    TokenId,
 };
 use bitcoinsuite_test_utils::bin_folder;
 use bitcoinsuite_test_utils_blockchain::build_tx;
 use chronik_indexer::{
-    broadcast::BroadcastError,
+    broadcast::{BroadcastError, SlpBurns},
     subscribers::{SubscribeBlockMessage, SubscribeScriptMessage},
     SlpIndexer, UtxoState, UtxoStateVariant,
 };
 use chronik_rocksdb::{
     BlockStats, Db, IndexDb, IndexMemData, MempoolTxEntry, PayloadPrefix, ScriptPayload,
-    ScriptTxsConf,
+    ScriptTxsConf, TokenStats,
 };
 use pretty_assertions::{assert_eq, assert_ne};
 use tempdir::TempDir;
@@ -387,6 +388,10 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
         time_first_seen: 2_100_000_001,
         network: Network::XPI,
     };
+    assert_eq!(
+        slp_indexer.tokens().token_stats_by_token_id(&token_id)?,
+        None,
+    );
     slp_indexer.process_next_msg()?;
     match timeout(dt_timeout, receiver.recv()).await?? {
         SubscribeScriptMessage::AddedToMempool(txid) => assert_eq!(txid, txid2),
@@ -448,6 +453,13 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
             ],
         )?;
     }
+    assert_eq!(
+        slp_indexer.tokens().token_stats_by_token_id(&token_id)?,
+        Some(TokenStats {
+            total_minted: 100,
+            total_burned: 0,
+        }),
+    );
 
     bitcoind.cmd_string("setmocktime", &["2100000002"])?;
     let (outpoint, value) = utxos.pop().unwrap();
@@ -480,7 +492,7 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
         outputs: vec![
             TxOutput {
                 value: 0,
-                script: send_opreturn(&token_id, SlpTokenType::Fungible, &[SlpAmount::new(100)]),
+                script: send_opreturn(&token_id, SlpTokenType::Fungible, &[SlpAmount::new(99)]),
             },
             TxOutput {
                 value: send_value,
@@ -489,21 +501,33 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
         ],
         lock_time: 0,
     };
-    slp_indexer
-        .broadcast()
-        .test_mempool_accept(&tx3, true)
-        .await??;
-    let txid3 = slp_indexer.broadcast().broadcast_tx(&tx3, true).await?;
+    let burns = vec![
+        None,
+        None,
+        Some(Box::new(SlpBurn {
+            token: SlpToken::amount(1),
+            token_id: token_id.clone(),
+        })),
+    ];
+    assert_eq!(
+        slp_indexer
+            .broadcast()
+            .test_mempool_accept(&tx3, true)
+            .await?
+            .unwrap_err(),
+        BroadcastError::InvalidSlpBurns(SlpBurns(burns.clone())),
+    );
+    let txid3 = slp_indexer.broadcast().broadcast_tx(&tx3, false).await?;
     let slp_tx_data3 = SlpValidTxData {
         slp_tx_data: SlpTxData {
             input_tokens: vec![SlpToken::EMPTY, SlpToken::EMPTY, SlpToken::amount(100)],
-            output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(100)],
+            output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(99)],
             slp_token_type: SlpTokenType::Fungible,
             slp_tx_type: SlpTxType::Send,
-            token_id,
+            token_id: token_id.clone(),
             group_token_id: None,
         },
-        slp_burns: vec![None, None, None],
+        slp_burns: burns.clone(),
     };
     let mut rich_tx3 = RichTx {
         tx: tx3.clone().hashed(),
@@ -537,7 +561,7 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
             },
         ]),
         spends: vec![None, None],
-        slp_burns: vec![None, None, None],
+        slp_burns: burns,
         slp_error_msg: None,
         time_first_seen: 2_100_000_002,
         network: Network::XPI,
@@ -670,6 +694,13 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
             height: None,
             state: UtxoStateVariant::Unspent,
         },
+    );
+    assert_eq!(
+        slp_indexer.tokens().token_stats_by_token_id(&token_id)?,
+        Some(TokenStats {
+            total_minted: 100,
+            total_burned: 1,
+        }),
     );
 
     let tip = slp_indexer.db().blocks()?.tip()?.unwrap();
@@ -944,6 +975,13 @@ async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli)
             height: None,
             state: UtxoStateVariant::NoSuchTx,
         },
+    );
+    assert_eq!(
+        slp_indexer.tokens().token_stats_by_token_id(&token_id)?,
+        Some(TokenStats {
+            total_minted: 100,
+            total_burned: 1,
+        }),
     );
 
     let block_stats_reader = slp_indexer.db().block_stats()?;
