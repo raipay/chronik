@@ -17,6 +17,7 @@ mod slp;
 mod slp_batch;
 mod spends;
 mod timings;
+mod transient_data;
 mod txs;
 mod utxos;
 
@@ -35,5 +36,10 @@ pub use crate::slp::*;
 pub use crate::slp_batch::*;
 pub use crate::spends::*;
 pub use crate::timings::*;
+pub use crate::transient_data::*;
 pub use crate::txs::*;
 pub use crate::utxos::*;
+
+pub mod proto {
+    tonic::include_proto!("chronik_db");
+}

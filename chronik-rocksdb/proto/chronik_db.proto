@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package chronik_db;
+
+// Tx data that cannot be reconstructed from blockchain data
+message TransientTxData {
+    uint64 txid_hash = 1;
+    int64 time_first_seen = 2;
+}
+
+message TransientBlockData {
+    repeated TransientTxData tx_data = 1;
+}

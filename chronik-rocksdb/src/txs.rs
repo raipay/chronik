@@ -26,7 +26,7 @@ pub type TxNumZC = U64<BE>;
 #[repr(C)]
 pub struct TxNumOrd(pub TxNumZC);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TxEntry {
     pub txid: Sha256d,
     pub data_pos: u32,
@@ -302,6 +302,20 @@ impl<'a> TxReader<'a> {
         Ok(Some(tx_num.get()))
     }
 
+    pub fn last_tx_num(&self) -> Result<Option<TxNum>> {
+        let mut iter = self
+            .db
+            .rocks()
+            .iterator_cf(self.cf_txs(), IteratorMode::End);
+        match iter.next() {
+            Some((key, _)) => {
+                let tx_num = interpret::<TxNumZC>(&key)?;
+                Ok(Some(tx_num.get()))
+            }
+            None => Ok(None),
+        }
+    }
+
     fn cf_txs(&self) -> &CF {
         self.db.cf(CF_TXS).unwrap()
     }
@@ -372,6 +386,7 @@ mod test {
             entry: tx1.clone(),
             block_height: 0,
         };
+        assert_eq!(tx_reader.last_tx_num()?, None);
         {
             // insert genesis tx
             let block_txs = BlockTxs {
@@ -384,6 +399,7 @@ mod test {
             let tx_reader = TxReader::new(&db)?;
             assert_eq!(tx_reader.first_tx_num_by_block(0)?, Some(0));
             assert_eq!(tx_reader.first_tx_num_by_block(1)?, None);
+            assert_eq!(tx_reader.last_tx_num()?, Some(0));
             assert_eq!(tx_reader.by_txid(&Sha256d::new([0; 32]))?, None);
             assert_eq!(tx_reader.tx_num_by_txid(&Sha256d::new([0; 32]))?, None);
             assert_eq!(
@@ -431,6 +447,7 @@ mod test {
             assert_eq!(tx_reader.first_tx_num_by_block(0)?, Some(0));
             assert_eq!(tx_reader.first_tx_num_by_block(1)?, Some(1));
             assert_eq!(tx_reader.first_tx_num_by_block(2)?, None);
+            assert_eq!(tx_reader.last_tx_num()?, Some(2));
             assert_eq!(tx_reader.by_txid(&Sha256d::new([0; 32]))?, None);
             assert_eq!(tx_reader.tx_num_by_txid(&Sha256d::new([0; 32]))?, None);
             assert_eq!(
@@ -459,6 +476,7 @@ mod test {
             db.write_batch(batch)?;
             assert_eq!(tx_reader.first_tx_num_by_block(0)?, Some(0));
             assert_eq!(tx_reader.first_tx_num_by_block(1)?, None);
+            assert_eq!(tx_reader.last_tx_num()?, Some(0));
             assert_eq!(tx_reader.by_txid(&Sha256d::new([0; 32]))?, None);
             assert_eq!(
                 tx_reader.by_txid(&Sha256d::new([1; 32]))?,
