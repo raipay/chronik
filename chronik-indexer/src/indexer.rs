@@ -20,7 +20,7 @@ use crate::{
     broadcast::Broadcast,
     subscribers::{SubscribeBlockMessage, SubscribeScriptMessage, Subscribers},
     txs::Txs,
-    Blocks, ScriptHistory, Utxos, Tokens,
+    Blocks, ScriptHistory, Tokens, Utxos,
 };
 
 pub struct SlpIndexer {
