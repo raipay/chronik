@@ -6,8 +6,8 @@ use bitcoinsuite_core::Network;
 use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
 use bitcoinsuite_error::{ErrorMeta, Result, WrapErr};
 use chronik_http::ChronikServer;
-use chronik_indexer::SlpIndexer;
-use chronik_rocksdb::{Db, IndexDb, IndexMemData, ScriptTxsConf};
+use chronik_indexer::{run_transient_data_catchup, SlpIndexer};
+use chronik_rocksdb::{Db, IndexDb, IndexMemData, ScriptTxsConf, TransientData};
 use serde::Deserialize;
 use thiserror::Error;
 use tokio::sync::RwLock;
@@ -21,6 +21,7 @@ struct ChronikConf {
     nng_rpc_url: String,
     bitcoind_rpc: BitcoindRpcClientConf,
     db_path: PathBuf,
+    transient_data_path: PathBuf,
     cache_script_history: usize,
     network: Network,
 }
@@ -64,9 +65,11 @@ async fn main() -> Result<()> {
     let rpc_interface = RpcInterface::open(&conf.nng_rpc_url)?;
 
     let db = Db::open(&conf.db_path)?;
+    let transient_data = TransientData::open(&conf.transient_data_path)?;
 
     let db = IndexDb::new(
         db,
+        transient_data,
         ScriptTxsConf {
             page_size: SCRIPT_TXS_PAGE_SIZE,
         },
@@ -92,6 +95,13 @@ async fn main() -> Result<()> {
         slp_indexer: Arc::clone(&slp_indexer),
     };
     tokio::spawn(server.run());
+
+    tokio::spawn({
+        let slp_indexer = Arc::clone(&slp_indexer);
+        async move {
+            run_transient_data_catchup(&slp_indexer).await.unwrap();
+        }
+    });
 
     loop {
         let msg = tokio::task::spawn_blocking({

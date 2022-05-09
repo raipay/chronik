@@ -13,8 +13,8 @@ use crate::{
     input_tx_nums::fetch_input_tx_nums, Block, BlockHeight, BlockReader, BlockStatsReader,
     BlockStatsWriter, BlockTxs, BlockWriter, Db, DbSchema, MempoolData, MempoolDeleteMode,
     MempoolSlpData, MempoolTxEntry, MempoolWriter, ScriptTxsConf, ScriptTxsReader, ScriptTxsWriter,
-    ScriptTxsWriterCache, SlpReader, SlpWriter, SpendsReader, SpendsWriter, Timings, TxReader,
-    TxWriter, UtxosReader, UtxosWriter,
+    ScriptTxsWriterCache, SlpReader, SlpWriter, SpendsReader, SpendsWriter, Timings, TransientData,
+    TransientDataWriter, TxReader, TxWriter, UtxosReader, UtxosWriter,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
@@ -26,6 +26,7 @@ pub struct IndexTimings {
 
 pub struct IndexDb {
     db: Db,
+    transient_data: TransientData,
     timings: RwLock<IndexTimings>,
     script_txs_conf: ScriptTxsConf,
 }
@@ -46,9 +47,10 @@ pub enum IndexDbError {
 use self::IndexDbError::*;
 
 impl IndexDb {
-    pub fn new(db: Db, script_txs_conf: ScriptTxsConf) -> Self {
+    pub fn new(db: Db, transient_data: TransientData, script_txs_conf: ScriptTxsConf) -> Self {
         IndexDb {
             db,
+            transient_data,
             timings: Default::default(),
             script_txs_conf,
         }
@@ -272,6 +274,14 @@ impl IndexDb {
         self.mempool_writer(data)
             .delete_mempool_tx(txid, MempoolDeleteMode::Remove)?;
         Ok(())
+    }
+
+    pub fn transient_data(&self) -> &TransientData {
+        &self.transient_data
+    }
+
+    pub fn transient_data_writer(&self) -> TransientDataWriter {
+        TransientDataWriter::new(&self.transient_data, &self.db)
     }
 
     fn mempool_writer<'a>(&'a self, data: &'a mut IndexMemData) -> MempoolWriter<'a> {

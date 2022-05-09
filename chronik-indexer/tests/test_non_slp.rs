@@ -16,7 +16,7 @@ use bitcoinsuite_test_utils::bin_folder;
 use chronik_indexer::SlpIndexer;
 use chronik_rocksdb::{
     BlockTx, Db, IndexDb, IndexMemData, OutpointEntry, PayloadPrefix, ScriptPayload, ScriptTxsConf,
-    ScriptTxsReader, TxEntry, UtxoEntry, UtxosReader,
+    ScriptTxsReader, TransientData, TxEntry, UtxoEntry, UtxosReader,
 };
 use pretty_assertions::assert_eq;
 use tempdir::TempDir;
@@ -45,7 +45,8 @@ async fn test_non_slp() -> Result<()> {
     let rpc_interface = RpcInterface::open(&rpc_url)?;
     let script_txs_conf = ScriptTxsConf { page_size: 1000 };
     let db = Db::open(dir.path().join("index.rocksdb"))?;
-    let db = IndexDb::new(db, script_txs_conf);
+    let transient_data = TransientData::open(&dir.path().join("transient.rocksdb"))?;
+    let db = IndexDb::new(db, transient_data, script_txs_conf);
     let bitcoin_cli = instance.cli();
     let cache = IndexMemData::new(10);
     let mut slp_indexer = SlpIndexer::new(
