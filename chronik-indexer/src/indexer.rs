@@ -9,12 +9,12 @@ use bitcoinsuite_core::{
     ecc::Ecc, BitcoinCode, Bytes, Hashed, Network, Script, Sha256d, UnhashedTx,
 };
 use bitcoinsuite_error::{ErrorMeta, Result};
-use thiserror::Error;
-
 use chronik_rocksdb::{
-    script_payloads, Block, BlockTxs, IndexDb, IndexMemData, MempoolData, MempoolSlpData,
-    MempoolTxEntry, TxEntry,
+    script_payloads, Block, BlockHeight, BlockTxs, IndexDb, IndexMemData, MempoolData,
+    MempoolSlpData, MempoolTxEntry, TxEntry,
 };
+use thiserror::Error;
+use tokio::sync::RwLock;
 
 use crate::{
     broadcast::Broadcast,
@@ -327,6 +327,7 @@ impl SlpIndexer {
             },
             &mut self.data,
         )?;
+        self.update_transient_data(next_height)?;
         println!(
             "Added block {} with {} txs, height {}",
             block.header.hash, num_txs, next_height,
@@ -359,6 +360,7 @@ impl SlpIndexer {
             },
             &mut self.data,
         )?;
+        self.db.transient_data_writer().delete_block(tip.height)?;
         println!(
             "Removed block {} via BlockDisconnected message",
             block.header.hash
@@ -451,4 +453,47 @@ impl SlpIndexer {
             )
         }
     }
+
+    fn update_transient_data(&mut self, tip_height: BlockHeight) -> Result<()> {
+        let next_block_height = self.db.transient_data().next_block_height().unwrap();
+        // Only update if transient data caught up 12 blocks deep.
+        // This overlaps with run_transient_data_catchup in case there is a race condition.
+        // Since this requires Write access and run_transient_data_catchup requires Read access,
+        // both will never update simultaneously.
+        if next_block_height + 12 <= tip_height {
+            return Ok(());
+        }
+        for block_height in next_block_height..=tip_height {
+            self.db.transient_data_writer().update_block(block_height)?;
+        }
+        Ok(())
+    }
+}
+
+pub async fn run_transient_data_catchup(slp_indexer: &RwLock<SlpIndexer>) -> Result<()> {
+    loop {
+        let slp_indexer = slp_indexer.read().await;
+        let tip = match slp_indexer.db().blocks().unwrap().tip().unwrap() {
+            Some(tip) => tip,
+            None => break,
+        };
+        let next_block_height = slp_indexer
+            .db()
+            .transient_data()
+            .next_block_height()
+            .unwrap();
+        // Stop when we're 10 blocks away from tip
+        if next_block_height + 10 > tip.height {
+            break;
+        }
+        slp_indexer
+            .db()
+            .transient_data_writer()
+            .update_block(next_block_height)
+            .unwrap();
+        if next_block_height % 100 == 0 {
+            println!("Synced transient data up to height {}", next_block_height);
+        }
+    }
+    Ok(())
 }

@@ -12,7 +12,9 @@ use bitcoinsuite_test_utils::{bin_folder, is_free_tcp, pick_ports};
 use bitcoinsuite_test_utils_blockchain::build_tx;
 use chronik_http::{proto, ChronikServer, CONTENT_TYPE_PROTOBUF};
 use chronik_indexer::SlpIndexer;
-use chronik_rocksdb::{Db, IndexDb, IndexMemData, PayloadPrefix, ScriptPayload, ScriptTxsConf};
+use chronik_rocksdb::{
+    Db, IndexDb, IndexMemData, PayloadPrefix, ScriptPayload, ScriptTxsConf, TransientData,
+};
 use futures::{SinkExt, StreamExt};
 use hyper::{header::CONTENT_TYPE, StatusCode};
 use pretty_assertions::assert_eq;
@@ -47,7 +49,8 @@ async fn test_server() -> Result<()> {
     let rpc_interface = RpcInterface::open(&rpc_url)?;
     let outputs_conf = ScriptTxsConf { page_size: 7 };
     let db = Db::open(dir.path().join("index.rocksdb"))?;
-    let db = IndexDb::new(db, outputs_conf);
+    let transient_data = TransientData::open(&dir.path().join("transient.rocksdb"))?;
+    let db = IndexDb::new(db, transient_data, outputs_conf);
     let bitcoind = instance.cli();
     let cache = IndexMemData::new(10);
     let mut slp_indexer = SlpIndexer::new(

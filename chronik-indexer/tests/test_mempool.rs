@@ -26,7 +26,7 @@ use chronik_indexer::{
 };
 use chronik_rocksdb::{
     BlockStats, Db, IndexDb, IndexMemData, MempoolTxEntry, PayloadPrefix, ScriptPayload,
-    ScriptTxsConf, TokenStats,
+    ScriptTxsConf, TokenStats, TransientData,
 };
 use pretty_assertions::{assert_eq, assert_ne};
 use tempdir::TempDir;
@@ -54,9 +54,10 @@ async fn test_mempool() -> Result<()> {
     instance.wait_for_ready()?;
     let pub_interface = PubInterface::open(&pub_url)?;
     let rpc_interface = RpcInterface::open(&rpc_url)?;
-    let outputs_conf = ScriptTxsConf { page_size: 7 };
+    let script_txs_conf = ScriptTxsConf { page_size: 7 };
     let db = Db::open(dir.path().join("index.rocksdb"))?;
-    let db = IndexDb::new(db, outputs_conf);
+    let transient_data = TransientData::open(&dir.path().join("transient.rocksdb"))?;
+    let db = IndexDb::new(db, transient_data, script_txs_conf);
     let bitcoind = instance.cli();
     let cache = IndexMemData::new(10);
     let mut slp_indexer = SlpIndexer::new(
