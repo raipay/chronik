@@ -103,6 +103,7 @@ impl ChronikServer {
                 "/broadcast-txs",
                 routing::post(handle_broadcast_txs).on(MethodFilter::OPTIONS, handle_post_options),
             )
+            .route("/blockchain-info", routing::get(handle_blockchain_info))
             .route("/blocks/:start/:end", routing::get(handle_blocks))
             .route("/block/:hash_or_height", routing::get(handle_block))
             .route("/tx/:txid", routing::get(handle_tx))
@@ -174,6 +175,20 @@ async fn handle_broadcast_txs(
     }
     Ok(Protobuf(proto::BroadcastTxsResponse {
         txids: txids.iter().map(|txid| txid.as_slice().to_vec()).collect(),
+    }))
+}
+
+async fn handle_blockchain_info(
+    Extension(server): Extension<ChronikServer>,
+) -> Result<Protobuf<proto::BlockchainInfo>, ReportError> {
+    let slp_indexer = server.slp_indexer.read().await;
+    let (tip_hash, tip_height) = match slp_indexer.blocks().tip()? {
+        Some(block) => (block.hash, block.height),
+        None => (Sha256d::new([0; 32]), -1),
+    };
+    Ok(Protobuf(proto::BlockchainInfo {
+        tip_hash: tip_hash.as_slice().to_vec(),
+        tip_height,
     }))
 }
 
