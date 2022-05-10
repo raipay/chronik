@@ -8,6 +8,7 @@ use bitcoinsuite_core::{
 };
 use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
 use bitcoinsuite_error::Result;
+use bitcoinsuite_slp::{genesis_opreturn, SlpGenesisInfo, SlpTokenType};
 use bitcoinsuite_test_utils::{bin_folder, is_free_tcp, pick_ports};
 use bitcoinsuite_test_utils_blockchain::build_tx;
 use chronik_http::{proto, ChronikServer, CONTENT_TYPE_PROTOBUF};
@@ -597,6 +598,79 @@ async fn test_server() -> Result<()> {
     );
     slp_indexer.write().await.process_next_msg()?;
     slp_indexer.write().await.process_next_msg()?;
+
+    {
+        // Test SLP
+        let utxo = utxos.pop().unwrap();
+        let leftover_value = utxo.output.value - 10_000;
+        let genesis_info = SlpGenesisInfo {
+            token_ticker: b"HTW".as_slice().into(),
+            token_name: b"Hello token world".as_slice().into(),
+            token_document_url: b"https://htw.io".as_slice().into(),
+            token_document_hash: Some([4; 32].into()),
+            decimals: 4,
+        };
+        let tx = build_tx(
+            utxo.outpoint,
+            &anyone1_script,
+            vec![
+                TxOutput {
+                    value: 0,
+                    script: genesis_opreturn(&genesis_info, SlpTokenType::Fungible, Some(2), 1234),
+                },
+                TxOutput {
+                    value: leftover_value,
+                    script: anyone2_script.to_p2sh(),
+                },
+            ],
+        );
+        let response = client
+            .post(format!("{}/broadcast-tx", url))
+            .header(CONTENT_TYPE, CONTENT_TYPE_PROTOBUF)
+            .body(
+                proto::BroadcastTxRequest {
+                    raw_tx: tx.ser().to_vec(),
+                    skip_slp_check: false,
+                }
+                .encode_to_vec(),
+            )
+            .send()
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = proto::BroadcastTxResponse::decode(response.bytes().await?)?;
+        let txid = Sha256d::from_slice(&response.txid)?;
+        slp_indexer.write().await.process_next_msg()?;
+
+        let response = client.get(format!("{}/token/{}", url, txid)).send().await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            proto::Token::decode(response.bytes().await?)?,
+            proto::Token {
+                slp_tx_data: Some(proto::SlpTxData {
+                    slp_meta: Some(proto::SlpMeta {
+                        token_type: proto::SlpTokenType::Fungible as i32,
+                        tx_type: proto::SlpTxType::Genesis as i32,
+                        token_id: txid.to_vec_be(),
+                        group_token_id: vec![],
+                    }),
+                    genesis_info: Some(proto::SlpGenesisInfo {
+                        token_ticker: genesis_info.token_ticker.to_vec(),
+                        token_name: genesis_info.token_name.to_vec(),
+                        token_document_url: genesis_info.token_document_url.to_vec(),
+                        token_document_hash: genesis_info
+                            .token_document_hash
+                            .map(|hash| hash.to_vec())
+                            .unwrap(),
+                        decimals: genesis_info.decimals,
+                    }),
+                }),
+                token_stats: Some(proto::TokenStats {
+                    total_minted: "1234".to_string(),
+                    total_burned: "0".to_string(),
+                }),
+            },
+        );
+    }
 
     instance.cleanup()?;
 

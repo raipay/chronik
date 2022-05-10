@@ -11,7 +11,7 @@ use axum::{
 };
 use bitcoinsuite_core::{BitcoinCode, BitcoinSuiteError, Hashed, OutPoint, Sha256d, UnhashedTx};
 use bitcoinsuite_error::{ErrorMeta, Report};
-use bitcoinsuite_slp::{SlpTokenType, SlpTxTypeVariant};
+use bitcoinsuite_slp::{SlpTokenType, SlpTxTypeVariant, TokenId};
 use chronik_indexer::{
     subscribers::{SubscribeBlockMessage, SubscribeScriptMessage},
     SlpIndexer, UtxoStateVariant,
@@ -46,6 +46,14 @@ pub enum ChronikServerError {
     #[error("Block not found: {0}")]
     BlockNotFound(String),
 
+    #[not_found()]
+    #[error("Token txid not found: {0}")]
+    TokenTxidNotFound(Sha256d),
+
+    #[not_found()]
+    #[error("Token txid is not a GENESIS tx: {0}")]
+    TokenTxNotGenesis(Sha256d),
+
     #[invalid_user_input()]
     #[error("Invalid hash or height: {0}")]
     InvalidHashOrHeight(String),
@@ -70,7 +78,7 @@ pub enum ChronikServerError {
 use crate::{
     convert::{
         block_to_info_proto, network_to_proto, parse_payload_prefix, rich_tx_to_proto,
-        slp_token_to_proto,
+        slp_token_to_proto, slp_tx_data_to_proto,
     },
     error::{report_to_status_proto, ReportError},
     proto,
@@ -94,6 +102,7 @@ impl ChronikServer {
             .route("/blocks/:start/:end", routing::get(handle_blocks))
             .route("/block/:hash_or_height", routing::get(handle_block))
             .route("/tx/:txid", routing::get(handle_tx))
+            .route("/token/:token_id", routing::get(handle_token))
             .route(
                 "/script/:type/:payload/history",
                 routing::get(handle_script_history),
@@ -245,6 +254,36 @@ async fn handle_tx(
         .map_err(ReportError)?
         .ok_or(TxNotFound(txid))?;
     Ok(Protobuf(rich_tx_to_proto(rich_tx)))
+}
+
+async fn handle_token(
+    Path(token_id): Path<String>,
+    Extension(server): Extension<ChronikServer>,
+) -> Result<Protobuf<proto::Token>, ReportError> {
+    let token_id = TokenId::from_token_id_hex(&token_id).map_err(|err| InvalidField {
+        name: "token_id",
+        value: err.to_string(),
+    })?;
+    let indexer = server.slp_indexer.read().await;
+    let rich_tx = indexer
+        .txs()
+        .rich_tx_by_txid(token_id.hash())
+        .map_err(ReportError)?
+        .ok_or_else(|| TokenTxidNotFound(token_id.hash().clone()))?;
+    let slp_tx_data = rich_tx
+        .slp_tx_data
+        .ok_or_else(|| TokenTxNotGenesis(token_id.hash().clone()))?;
+    let token_stats = indexer
+        .tokens()
+        .token_stats_by_token_id(&token_id)?
+        .unwrap_or_default();
+    Ok(Protobuf(proto::Token {
+        slp_tx_data: Some(slp_tx_data_to_proto(slp_tx_data)),
+        token_stats: Some(proto::TokenStats {
+            total_minted: token_stats.total_minted.to_string(),
+            total_burned: token_stats.total_burned.to_string(),
+        }),
+    }))
 }
 
 async fn handle_script_history(
