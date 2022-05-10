@@ -11,7 +11,7 @@ use bitcoinsuite_core::{
 use bitcoinsuite_error::{ErrorMeta, Result};
 use chronik_rocksdb::{
     script_payloads, Block, BlockHeight, BlockTxs, IndexDb, IndexMemData, MempoolData,
-    MempoolSlpData, MempoolTxEntry, TxEntry,
+    MempoolSlpData, MempoolTxEntry, TransientBlockDataReader, TxEntry,
 };
 use thiserror::Error;
 use tokio::sync::RwLock;
@@ -293,18 +293,28 @@ impl SlpIndexer {
             file_num: block.file_num,
             data_pos: block.data_pos,
         };
+        let transient_block_data = self.db.transient_data().read_block(next_height)?;
+        let mut transient_data_reader =
+            TransientBlockDataReader::new(match &transient_block_data {
+                Some(block_data) => &block_data.tx_data,
+                None => &[],
+            });
         let num_txs = block.txs.len();
         let db_txs = block
             .txs
             .iter()
             .zip(&txs)
             .map(|(block_tx, tx)| {
-                let time_first_seen = match self.db_mempool().tx(&block_tx.tx.txid) {
+                let txid = &block_tx.tx.txid;
+                let time_first_seen = match self.db_mempool().tx(txid) {
                     Some(entry) => entry.time_first_seen,
-                    None => 0, // indicates unknown
+                    None => match transient_data_reader.read_for_next_txid(txid) {
+                        Some(transient_entry) => transient_entry.time_first_seen,
+                        None => 0, // indicates unknown
+                    },
                 };
                 TxEntry {
-                    txid: block_tx.tx.txid.clone(),
+                    txid: txid.clone(),
                     data_pos: block_tx.data_pos,
                     tx_size: block_tx.tx.raw.len() as u32,
                     undo_pos: block_tx.undo_pos,
