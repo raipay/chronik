@@ -504,10 +504,21 @@ async fn test_server() -> Result<()> {
             hash: cur_hash.as_slice().to_vec(),
             timestamp: 2100000020,
         });
+        let block_details = proto::BlockDetails {
+            version: 1,
+            merkle_root: Sha256d::from_hex_be(
+                "824e3cc681067cb6fff43cec4281021906c37312ae19c019d71dbffd18f5fc14",
+            )?
+            .as_slice()
+            .to_vec(),
+            nonce: 0,
+            median_timestamp: 2100000019,
+        };
         assert_eq!(
             proto_block,
             proto::Block {
                 block_info: Some(block_info),
+                block_details: Some(block_details),
                 txs: vec![proto_block.txs[0].clone(), expected_tx],
             }
         )

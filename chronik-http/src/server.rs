@@ -10,7 +10,7 @@ use axum::{
     AddExtensionLayer, Router,
 };
 use bitcoinsuite_core::{BitcoinCode, BitcoinSuiteError, Hashed, OutPoint, Sha256d, UnhashedTx};
-use bitcoinsuite_error::{ErrorMeta, Report};
+use bitcoinsuite_error::{ErrorMeta, Report, WrapErr};
 use bitcoinsuite_slp::{SlpTokenType, SlpTxTypeVariant, TokenId};
 use chronik_indexer::{
     subscribers::{SubscribeBlockMessage, SubscribeScriptMessage},
@@ -73,6 +73,10 @@ pub enum ChronikServerError {
     #[invalid_user_input()]
     #[error("Invalid tx encoding: {0}")]
     InvalidTxEncoding(BitcoinSuiteError),
+
+    #[critical()]
+    #[error("Unexpected JSON from bitcoind: {0}")]
+    BitcoindBadJson(&'static str),
 }
 
 use crate::{
@@ -236,7 +240,36 @@ async fn handle_block(
     let block_info = Some(block_to_info_proto(&block, &block_stats));
     let txs = slp_indexer.blocks().block_txs_by_height(block.height)?;
     let txs = txs.into_iter().map(rich_tx_to_proto).collect();
-    Ok(Protobuf(proto::Block { txs, block_info }))
+    let bitcoind_rpc = slp_indexer.bitcoind_rpc().clone();
+    std::mem::drop(slp_indexer);
+    let block_header_json = bitcoind_rpc
+        .cmd_json("getblockheader", &[block.hash.to_string().into()])
+        .await?;
+    let version = block_header_json["version"]
+        .as_i32()
+        .ok_or(BitcoindBadJson("Missing/ill-typed version"))?;
+    let merkle_root = block_header_json["merkleroot"]
+        .as_str()
+        .ok_or(BitcoindBadJson("Missing/ill-typed merkleroot"))?;
+    let merkle_root =
+        Sha256d::from_hex_be(merkle_root).wrap_err(BitcoindBadJson("Invalid merkleroot length"))?;
+    let nonce = block_header_json["nonce"]
+        .as_u64()
+        .ok_or(BitcoindBadJson("Missing/ill-typed nonce"))?;
+    let median_timestamp = block_header_json["mediantime"]
+        .as_i64()
+        .ok_or(BitcoindBadJson("Missing/ill-typed mediantime"))?;
+    let block_details = Some(proto::BlockDetails {
+        version,
+        merkle_root: merkle_root.as_slice().to_vec(),
+        nonce,
+        median_timestamp,
+    });
+    Ok(Protobuf(proto::Block {
+        txs,
+        block_info,
+        block_details,
+    }))
 }
 
 async fn handle_tx(
