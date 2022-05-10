@@ -28,6 +28,11 @@ message BroadcastTxsResponse {
     repeated bytes txids = 1;
 }
 
+message BlockchainInfo {
+    bytes tip_hash = 1;
+    int32 tip_height = 2;
+}
+
 message Tx {
     bytes txid = 1;
     int32 version = 2;

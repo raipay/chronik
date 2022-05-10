@@ -54,7 +54,7 @@ async fn test_server() -> Result<()> {
     let db = IndexDb::new(db, transient_data, outputs_conf);
     let bitcoind = instance.cli();
     let cache = IndexMemData::new(10);
-    let mut slp_indexer = SlpIndexer::new(
+    let slp_indexer = SlpIndexer::new(
         db,
         instance.rpc_client().clone(),
         rpc_interface,
@@ -65,30 +65,7 @@ async fn test_server() -> Result<()> {
     )?;
     bitcoind.cmd_string("setmocktime", &["2100000000"])?;
 
-    let anyone1_script = Script::from_slice(&[0x51]);
-    let anyone1_hash = ShaRmd160::digest(anyone1_script.bytecode().clone());
-    let anyone1_slice = anyone1_hash.as_slice();
-    let anyone1_address = CashAddress::from_hash(BCHREG, AddressType::P2SH, anyone1_hash.clone());
-    bitcoind.cmd_json("generatetoaddress", &["10", anyone1_address.as_str()])?;
-    let burn_address = CashAddress::from_hash(BCHREG, AddressType::P2SH, ShaRmd160::new([0; 20]));
-    bitcoind.cmd_json("generatetoaddress", &["100", burn_address.as_str()])?;
-
-    while !slp_indexer.catchup_step().await? {}
-    slp_indexer.leave_catchup()?;
-
-    let mut utxos = slp_indexer.utxos().utxos(&ScriptPayload {
-        payload_prefix: PayloadPrefix::P2SH,
-        payload_data: anyone1_slice.to_vec(),
-    })?;
-    assert_eq!(utxos.len(), 10);
-
-    let anyone2_script = Script::from_slice(&[0x52]);
-    let anyone2_hash = ShaRmd160::digest(anyone2_script.bytecode().clone());
-    let anyone2_slice = anyone2_hash.as_slice();
-    let anyone2_address = CashAddress::from_hash(BCHREG, AddressType::P2SH, anyone2_hash.clone());
-
     let slp_indexer = Arc::new(RwLock::new(slp_indexer));
-
     let port = pick_ports(1)?[0];
     let server = ChronikServer {
         addr: ([127, 0, 0, 1], port).into(),
@@ -103,10 +80,45 @@ async fn test_server() -> Result<()> {
         tokio::time::sleep(Duration::from_millis(10)).await;
         attempt += 1;
     }
-
     let client = reqwest::Client::new();
     let url = format!("http://127.0.0.1:{}", port);
     let ws_url = format!("ws://127.0.0.1:{}", port);
+
+    let response = client
+        .get(format!("{}/blockchain-info", url))
+        .send()
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[CONTENT_TYPE], CONTENT_TYPE_PROTOBUF);
+    assert_eq!(
+        proto::BlockchainInfo::decode(response.bytes().await?)?,
+        proto::BlockchainInfo {
+            tip_hash: vec![0; 32],
+            tip_height: -1,
+        }
+    );
+
+    let anyone1_script = Script::from_slice(&[0x51]);
+    let anyone1_hash = ShaRmd160::digest(anyone1_script.bytecode().clone());
+    let anyone1_slice = anyone1_hash.as_slice();
+    let anyone1_address = CashAddress::from_hash(BCHREG, AddressType::P2SH, anyone1_hash.clone());
+    bitcoind.cmd_json("generatetoaddress", &["10", anyone1_address.as_str()])?;
+    let burn_address = CashAddress::from_hash(BCHREG, AddressType::P2SH, ShaRmd160::new([0; 20]));
+    bitcoind.cmd_json("generatetoaddress", &["100", burn_address.as_str()])?;
+
+    while !slp_indexer.write().await.catchup_step().await? {}
+    slp_indexer.write().await.leave_catchup()?;
+
+    let mut utxos = slp_indexer.read().await.utxos().utxos(&ScriptPayload {
+        payload_prefix: PayloadPrefix::P2SH,
+        payload_data: anyone1_slice.to_vec(),
+    })?;
+    assert_eq!(utxos.len(), 10);
+
+    let anyone2_script = Script::from_slice(&[0x52]);
+    let anyone2_hash = ShaRmd160::digest(anyone2_script.bytecode().clone());
+    let anyone2_slice = anyone2_hash.as_slice();
+    let anyone2_address = CashAddress::from_hash(BCHREG, AddressType::P2SH, anyone2_hash.clone());
 
     let (mut ws_client, response) = connect_async(format!("{}/ws", ws_url)).await?;
     assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
@@ -521,7 +533,21 @@ async fn test_server() -> Result<()> {
                 block_details: Some(block_details),
                 txs: vec![proto_block.txs[0].clone(), expected_tx],
             }
-        )
+        );
+
+        let response = client
+            .get(format!("{}/blockchain-info", url))
+            .send()
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[CONTENT_TYPE], CONTENT_TYPE_PROTOBUF);
+        assert_eq!(
+            proto::BlockchainInfo::decode(response.bytes().await?)?,
+            proto::BlockchainInfo {
+                tip_hash: cur_hash.as_slice().to_vec(),
+                tip_height: 111,
+            }
+        );
     }
 
     let response = client.get(format!("{}/blocks/10/20", url)).send().await?;
