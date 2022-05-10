@@ -16,6 +16,9 @@ byteorder = "1.4"
 bitcoinsuite-core = { path = "../../bitcoinsuite/bitcoinsuite-core" }
 bitcoinsuite-slp = { path = "../../bitcoinsuite/bitcoinsuite-slp" }
 
+bytes = { version = "1.0", features = ["serde"] }
+arcstr = { version = "1.0", features = ["serde"] }
+
 # Error handling
 thiserror = "1.0"
 bitcoinsuite-error = { path = "../../bitcoinsuite/bitcoinsuite-error" }

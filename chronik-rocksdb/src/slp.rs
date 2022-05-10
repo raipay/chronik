@@ -753,11 +753,74 @@ impl<'a> SlpReader<'a> {
 
     pub fn token_by_token_num(&self, token_num: TokenNum) -> Result<Option<SlpGenesisInfo>> {
         let token_num = TokenNumZC::new(token_num);
+
+        #[derive(Deserialize, Debug, PartialEq, Eq, Clone, Hash, PartialOrd, Ord, Default)]
+        struct LegacyName {
+            prefix: Option<arcstr::ArcStr>,
+            index: Option<usize>,
+        }
+
+        #[derive(Deserialize, Debug, Clone, Default)]
+        struct LegacyBytes {
+            data: bytes::Bytes,
+            _name: LegacyName,
+        }
+
+        #[derive(Debug, Clone)]
+        pub struct LegacyByteArray<const N: usize> {
+            data: [u8; N],
+            _name: LegacyName,
+        }
+
+        #[derive(Deserialize, Clone, Debug)]
+        pub struct LegacySlpGenesisInfo {
+            token_ticker: LegacyBytes,
+            token_name: LegacyBytes,
+            token_document_url: LegacyBytes,
+            token_document_hash: Option<LegacyByteArray<32>>,
+            decimals: u32,
+        }
+
+        impl<'de, const N: usize> Deserialize<'de> for LegacyByteArray<N> {
+            fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                use serde::de::Error;
+                let (data, name) = <(Vec<u8>, LegacyName)>::deserialize(deserializer)?;
+                let data: [u8; N] = data
+                    .try_into()
+                    .map_err(|_| D::Error::custom("LegacyByteArray: invalid data size"))?;
+                Ok(LegacyByteArray { data, _name: name })
+            }
+        }
+
+        impl LegacySlpGenesisInfo {
+            fn into_genesis_info(self) -> SlpGenesisInfo {
+                use bitcoinsuite_core::Bytes;
+                SlpGenesisInfo {
+                    token_ticker: Bytes::from_bytes(self.token_ticker.data),
+                    token_name: Bytes::from_bytes(self.token_name.data),
+                    token_document_url: Bytes::from_bytes(self.token_document_url.data),
+                    token_document_hash: self.token_document_hash.map(|hash| hash.data.into()),
+                    decimals: self.decimals,
+                }
+            }
+        }
+
         match self
             .db
             .get(self.cf_slp_token_metadata(), token_num.as_bytes())?
         {
-            Some(slp_genesis_info) => Ok(Some(bincode::deserialize(&slp_genesis_info)?)),
+            Some(slp_genesis_info) => {
+                match bincode::deserialize::<SlpGenesisInfo>(&slp_genesis_info) {
+                    Ok(slp_genesis_info) => Ok(Some(slp_genesis_info)),
+                    Err(_) => {
+                        let legacy_genesis_info = bincode::deserialize::<LegacySlpGenesisInfo>(&slp_genesis_info)?;
+                        Ok(Some(legacy_genesis_info.into_genesis_info()))
+                    }
+                }
+            },
             None => Ok(None),
         }
     }
