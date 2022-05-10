@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use bitcoinsuite_core::Hashed;
+use bitcoinsuite_core::{Hashed, Sha256d};
 use bitcoinsuite_error::{ErrorMeta, Result, WrapErr};
 use prost::Message;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -19,6 +19,11 @@ pub struct TransientData {
 pub struct TransientDataWriter<'a> {
     transient_data: &'a TransientData,
     db: &'a Db,
+}
+
+pub struct TransientBlockDataReader<'a> {
+    tx_data: &'a [proto::TransientTxData],
+    tx_idx: usize,
 }
 
 #[derive(Debug, Error, ErrorMeta)]
@@ -146,14 +151,32 @@ impl<'a> TransientDataWriter<'a> {
     }
 }
 
+impl<'a> TransientBlockDataReader<'a> {
+    pub fn new(tx_data: &'a [proto::TransientTxData]) -> Self {
+        TransientBlockDataReader { tx_data, tx_idx: 0 }
+    }
+
+    pub fn read_for_next_txid(&mut self, txid: &Sha256d) -> Option<&proto::TransientTxData> {
+        let tx_data = self.tx_data.get(self.tx_idx)?;
+        if tx_data.txid_hash != seahash::hash(txid.as_slice()) {
+            return None;
+        }
+        self.tx_idx += 1;
+        Some(tx_data)
+    }
+}
+
 #[cfg(test)]
 mod test {
-    use bitcoinsuite_core::Sha256d;
+    use bitcoinsuite_core::{Hashed, Sha256d};
     use bitcoinsuite_error::Result;
     use pretty_assertions::assert_eq;
     use rocksdb::WriteBatch;
 
-    use crate::{proto, BlockTxs, Db, TransientData, TransientDataWriter, TxEntry, TxWriter};
+    use crate::{
+        proto, BlockTxs, Db, TransientBlockDataReader, TransientData, TransientDataWriter, TxEntry,
+        TxWriter,
+    };
 
     #[test]
     fn test_transient_data() -> Result<()> {
@@ -262,6 +285,52 @@ mod test {
                 }),
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_transient_block_data_reader() -> Result<()> {
+        bitcoinsuite_error::install()?;
+        let txids = (0u8..=10)
+            .into_iter()
+            .map(|byte| Sha256d::new([byte; 32]))
+            .collect::<Vec<_>>();
+        let tx_data = vec![
+            proto::TransientTxData {
+                txid_hash: seahash::hash(txids[3].as_slice()),
+                time_first_seen: 1,
+            },
+            proto::TransientTxData {
+                txid_hash: seahash::hash(txids[4].as_slice()),
+                time_first_seen: 1,
+            },
+            proto::TransientTxData {
+                txid_hash: seahash::hash(txids[7].as_slice()),
+                time_first_seen: 1,
+            },
+            proto::TransientTxData {
+                txid_hash: seahash::hash(txids[10].as_slice()),
+                time_first_seen: 1,
+            },
+        ];
+        let mut reader = TransientBlockDataReader::new(&[]);
+        assert_eq!(reader.read_for_next_txid(&txids[0]), None);
+
+        let mut reader = TransientBlockDataReader::new(&tx_data);
+        assert_eq!(reader.read_for_next_txid(&txids[0]), None);
+        assert_eq!(reader.read_for_next_txid(&txids[1]), None);
+        assert_eq!(reader.read_for_next_txid(&txids[2]), None);
+        assert_eq!(reader.read_for_next_txid(&txids[3]), Some(&tx_data[0]));
+        assert_eq!(reader.read_for_next_txid(&txids[3]), None);
+        assert_eq!(reader.read_for_next_txid(&txids[4]), Some(&tx_data[1]));
+        assert_eq!(reader.read_for_next_txid(&txids[5]), None);
+        assert_eq!(reader.read_for_next_txid(&txids[6]), None);
+        assert_eq!(reader.read_for_next_txid(&txids[7]), Some(&tx_data[2]));
+        assert_eq!(reader.read_for_next_txid(&txids[8]), None);
+        assert_eq!(reader.read_for_next_txid(&txids[9]), None);
+        assert_eq!(reader.read_for_next_txid(&txids[10]), Some(&tx_data[3]));
+        assert_eq!(reader.read_for_next_txid(&txids[10]), None);
+
         Ok(())
     }
 }
