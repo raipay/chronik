@@ -51,6 +51,11 @@ message Utxo {
     Network network = 9;
 }
 
+message Token {
+    SlpTxData slp_tx_data = 1;
+    TokenStats token_stats = 2;
+}
+
 message BlockInfo {
     bytes hash = 1;
     bytes prev_hash = 2;
@@ -108,6 +113,14 @@ message SlpMeta {
     SlpTxType tx_type = 2;
     bytes token_id = 3;
     bytes group_token_id = 4;
+}
+
+message TokenStats {
+    // This doesn't fit into uint64, so we use a string with the decimal
+    // representation. If available, use i128 to parse, otherwise some
+    // BigNumber library.
+    string total_minted = 1;
+    string total_burned = 2;
 }
 
 message TxInput {

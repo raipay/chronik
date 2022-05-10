@@ -1,5 +1,5 @@
 use bitcoinsuite_core::{ecc::PUBKEY_LENGTH, Hashed, Network, Sha256, ShaRmd160};
-use bitcoinsuite_slp::{RichTx, SlpToken, SlpTokenType, SlpTxType};
+use bitcoinsuite_slp::{RichTx, SlpToken, SlpTokenType, SlpTxData, SlpTxType};
 
 use bitcoinsuite_error::{ErrorMeta, Report};
 
@@ -83,40 +83,7 @@ pub fn rich_tx_to_proto(rich_tx: RichTx) -> proto::Tx {
             })
             .collect(),
         lock_time: rich_tx.tx.lock_time(),
-        slp_tx_data: rich_tx.slp_tx_data.map(|slp_tx_data| proto::SlpTxData {
-            slp_meta: Some(proto::SlpMeta {
-                token_type: match slp_tx_data.slp_token_type {
-                    SlpTokenType::Fungible => proto::SlpTokenType::Fungible as i32,
-                    SlpTokenType::Nft1Group => proto::SlpTokenType::Nft1Group as i32,
-                    SlpTokenType::Nft1Child => proto::SlpTokenType::Nft1Child as i32,
-                    SlpTokenType::Unknown => proto::SlpTokenType::UnknownTokenType as i32,
-                },
-                tx_type: match &slp_tx_data.slp_tx_type {
-                    SlpTxType::Genesis(_) => proto::SlpTxType::Genesis as i32,
-                    SlpTxType::Send => proto::SlpTxType::Send as i32,
-                    SlpTxType::Mint => proto::SlpTxType::Mint as i32,
-                    SlpTxType::Unknown => proto::SlpTxType::UnknownTxType as i32,
-                },
-                token_id: slp_tx_data.token_id.as_slice_be().to_vec(),
-                group_token_id: slp_tx_data
-                    .group_token_id
-                    .map(|token_id| token_id.as_slice_be().to_vec())
-                    .unwrap_or_default(),
-            }),
-            genesis_info: match slp_tx_data.slp_tx_type {
-                SlpTxType::Genesis(genesis_info) => Some(proto::SlpGenesisInfo {
-                    token_ticker: genesis_info.token_ticker.to_vec(),
-                    token_name: genesis_info.token_name.to_vec(),
-                    token_document_url: genesis_info.token_document_url.to_vec(),
-                    token_document_hash: genesis_info
-                        .token_document_hash
-                        .map(|arr| arr.to_vec())
-                        .unwrap_or_default(),
-                    decimals: genesis_info.decimals,
-                }),
-                _ => None,
-            },
-        }),
+        slp_tx_data: rich_tx.slp_tx_data.map(slp_tx_data_to_proto),
         slp_error_msg: rich_tx.slp_error_msg.unwrap_or_default(),
         block: rich_tx.block.map(|block| proto::BlockMetadata {
             height: block.height,
@@ -125,6 +92,44 @@ pub fn rich_tx_to_proto(rich_tx: RichTx) -> proto::Tx {
         }),
         time_first_seen: rich_tx.time_first_seen,
         network: network_to_proto(rich_tx.network) as i32,
+    }
+}
+
+#[allow(clippy::boxed_local)]
+pub fn slp_tx_data_to_proto(slp_tx_data: Box<SlpTxData>) -> proto::SlpTxData {
+    proto::SlpTxData {
+        slp_meta: Some(proto::SlpMeta {
+            token_type: match slp_tx_data.slp_token_type {
+                SlpTokenType::Fungible => proto::SlpTokenType::Fungible as i32,
+                SlpTokenType::Nft1Group => proto::SlpTokenType::Nft1Group as i32,
+                SlpTokenType::Nft1Child => proto::SlpTokenType::Nft1Child as i32,
+                SlpTokenType::Unknown => proto::SlpTokenType::UnknownTokenType as i32,
+            },
+            tx_type: match &slp_tx_data.slp_tx_type {
+                SlpTxType::Genesis(_) => proto::SlpTxType::Genesis as i32,
+                SlpTxType::Send => proto::SlpTxType::Send as i32,
+                SlpTxType::Mint => proto::SlpTxType::Mint as i32,
+                SlpTxType::Unknown => proto::SlpTxType::UnknownTxType as i32,
+            },
+            token_id: slp_tx_data.token_id.as_slice_be().to_vec(),
+            group_token_id: slp_tx_data
+                .group_token_id
+                .map(|token_id| token_id.as_slice_be().to_vec())
+                .unwrap_or_default(),
+        }),
+        genesis_info: match slp_tx_data.slp_tx_type {
+            SlpTxType::Genesis(genesis_info) => Some(proto::SlpGenesisInfo {
+                token_ticker: genesis_info.token_ticker.to_vec(),
+                token_name: genesis_info.token_name.to_vec(),
+                token_document_url: genesis_info.token_document_url.to_vec(),
+                token_document_hash: genesis_info
+                    .token_document_hash
+                    .map(|arr| arr.to_vec())
+                    .unwrap_or_default(),
+                decimals: genesis_info.decimals,
+            }),
+            _ => None,
+        },
     }
 }
 
