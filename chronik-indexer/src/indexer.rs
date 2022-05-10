@@ -219,6 +219,10 @@ impl SlpIndexer {
         Ok(())
     }
 
+    pub fn bitcoind_rpc(&self) -> &BitcoindRpcClient {
+        &self.bitcoind
+    }
+
     pub fn db(&self) -> &IndexDb {
         &self.db
     }

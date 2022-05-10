@@ -14,7 +14,6 @@ pub struct BlockStatsWriter<'a> {
 
 pub struct BlockStatsReader<'a> {
     db: &'a Db,
-    cf_block_stats: &'a CF,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
@@ -133,13 +132,13 @@ impl<'a> BlockStatsWriter<'a> {
 
 impl<'a> BlockStatsReader<'a> {
     pub fn new(db: &'a Db) -> Result<Self> {
-        let cf_block_stats = db.cf(CF_BLOCK_STATS)?;
-        Ok(BlockStatsReader { db, cf_block_stats })
+        db.cf(CF_BLOCK_STATS)?;
+        Ok(BlockStatsReader { db })
     }
 
     pub fn by_height(&self, block_height: BlockHeight) -> Result<Option<BlockStats>> {
         let block_height = BlockHeightZC::new(block_height);
-        let block_stats = match self.db.get(self.cf_block_stats, block_height.as_bytes())? {
+        let block_stats = match self.db.get(self.cf_block_stats(), block_height.as_bytes())? {
             Some(block_stats) => block_stats,
             None => return Ok(None),
         };
@@ -154,5 +153,9 @@ impl<'a> BlockStatsReader<'a> {
             sum_normal_output_sats: block_stats.sum_normal_output_sats.get(),
             sum_burned_sats: block_stats.sum_burned_sats.get(),
         }))
+    }
+
+    fn cf_block_stats(&self) -> &CF {
+        self.db.cf(CF_BLOCK_STATS).unwrap()
     }
 }

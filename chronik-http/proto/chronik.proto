@@ -80,8 +80,16 @@ message BlockInfo {
     int64 sum_burned_sats = 13;
 }
 
+message BlockDetails {
+    int32 version = 1;
+    bytes merkle_root = 2;
+    uint64 nonce = 3;
+    int64 median_timestamp = 4;
+}
+
 message Block {
     BlockInfo block_info = 1;
+    BlockDetails block_details = 3;
     repeated Tx txs = 2;
 }
 
