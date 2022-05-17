@@ -253,6 +253,10 @@ async fn handle_block(
         .by_height(block.height)?
         .expect("Inconsistent index");
     let block_info = Some(block_to_info_proto(&block, &block_stats));
+    let raw_header = slp_indexer
+        .blocks()
+        .raw_header(&block)?
+        .expect("Inconsistent index");
     let txs = slp_indexer.blocks().block_txs_by_height(block.height)?;
     let txs = txs.into_iter().map(rich_tx_to_proto).collect();
     let bitcoind_rpc = slp_indexer.bitcoind_rpc().clone();
@@ -281,9 +285,10 @@ async fn handle_block(
         median_timestamp,
     });
     Ok(Protobuf(proto::Block {
-        txs,
         block_info,
         block_details,
+        raw_header,
+        txs,
     }))
 }
 

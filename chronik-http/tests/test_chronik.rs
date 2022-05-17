@@ -527,11 +527,19 @@ async fn test_server() -> Result<()> {
             nonce: 0,
             median_timestamp: 2100000019,
         };
+        let raw_header = hex::decode(
+            "d72912f6f5e54f2ef8d4bdf97fdab91f23457997a996aa3dff0a73edf1f8ca58ffff7f2014752b7d000\
+             000000000000000000000\
+             01870100000000006f0000000000000000000000000000000000000000000000000000000000000000000000\
+             14fcf518fdbf1dd719c019ae1273c30619028142ec3cf4ffb67c0681c63c4e82\
+             1406e05881e299367766d313e26c05564ec91bf721d31726bd6e46e60689539a"
+        )?;
         assert_eq!(
             proto_block,
             proto::Block {
                 block_info: Some(block_info),
                 block_details: Some(block_details),
+                raw_header,
                 txs: vec![proto_block.txs[0].clone(), expected_tx],
             }
         );

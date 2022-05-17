@@ -96,6 +96,7 @@ message BlockDetails {
 message Block {
     BlockInfo block_info = 1;
     BlockDetails block_details = 3;
+    bytes raw_header = 4;
     repeated Tx txs = 2;
 }
 
