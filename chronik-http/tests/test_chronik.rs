@@ -240,10 +240,20 @@ async fn test_server() -> Result<()> {
         block: None,
         time_first_seen: 2_100_000_000,
         size: 117,
+        is_coinbase: false,
         network: proto::Network::Xpi as i32,
     };
 
     assert_eq!(proto_tx, expected_tx.clone());
+
+    let coinbase_utxo = utxos.pop().unwrap();
+    let response = client
+        .get(format!("{}/tx/{}", url, coinbase_utxo.outpoint.txid))
+        .send()
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let proto_tx = proto::Tx::decode(response.bytes().await?)?;
+    assert!(proto_tx.is_coinbase);
 
     let response = client
         .get(format!("{}/raw-tx/{}", url, txid))

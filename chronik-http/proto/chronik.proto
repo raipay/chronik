@@ -44,6 +44,7 @@ message Tx {
     BlockMetadata block = 8;
     int64 time_first_seen = 9;
     uint32 size = 11;
+    bool is_coinbase = 12;
     Network network = 10;
 }
 

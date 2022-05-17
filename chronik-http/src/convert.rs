@@ -92,6 +92,7 @@ pub fn rich_tx_to_proto(rich_tx: RichTx) -> proto::Tx {
         }),
         time_first_seen: rich_tx.time_first_seen,
         size: rich_tx.tx.raw().len() as u32,
+        is_coinbase: rich_tx.tx.inputs()[0].prev_out.is_coinbase(),
         network: network_to_proto(rich_tx.network) as i32,
     }
 }
