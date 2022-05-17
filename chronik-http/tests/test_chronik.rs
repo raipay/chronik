@@ -229,6 +229,7 @@ async fn test_server() -> Result<()> {
         slp_error_msg: "".to_string(),
         block: None,
         time_first_seen: 2_100_000_000,
+        size: 117,
         network: proto::Network::Xpi as i32,
     };
 
