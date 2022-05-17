@@ -107,6 +107,7 @@ impl ChronikServer {
             .route("/blocks/:start/:end", routing::get(handle_blocks))
             .route("/block/:hash_or_height", routing::get(handle_block))
             .route("/tx/:txid", routing::get(handle_tx))
+            .route("/raw-tx/:txid", routing::get(handle_raw_tx))
             .route("/token/:token_id", routing::get(handle_token))
             .route(
                 "/script/:type/:payload/history",
@@ -307,6 +308,23 @@ async fn handle_tx(
         .map_err(ReportError)?
         .ok_or(TxNotFound(txid))?;
     Ok(Protobuf(rich_tx_to_proto(rich_tx)))
+}
+
+async fn handle_raw_tx(
+    Path(txid): Path<String>,
+    Extension(server): Extension<ChronikServer>,
+) -> Result<Vec<u8>, ReportError> {
+    let txid = Sha256d::from_hex_be(&txid).map_err(|err| InvalidField {
+        name: "txid",
+        value: err.to_string(),
+    })?;
+    let indexer = server.slp_indexer.read().await;
+    let raw_tx = indexer
+        .txs()
+        .raw_tx_by_id(&txid)
+        .map_err(ReportError)?
+        .ok_or(TxNotFound(txid))?;
+    Ok(raw_tx.to_vec())
 }
 
 async fn handle_token(

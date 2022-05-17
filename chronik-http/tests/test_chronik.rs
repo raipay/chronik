@@ -3,8 +3,8 @@ use std::{ffi::OsString, str::FromStr, sync::Arc, time::Duration};
 use bitcoinsuite_bitcoind::instance::{BitcoindChain, BitcoindConf, BitcoindInstance};
 use bitcoinsuite_bitcoind_nng::{PubInterface, RpcInterface};
 use bitcoinsuite_core::{
-    lotus_txid, AddressType, BitcoinCode, CashAddress, Hashed, Network, Script, Sha256d, ShaRmd160,
-    TxOutput, BCHREG,
+    lotus_txid, AddressType, BitcoinCode, Bytes, CashAddress, Hashed, Network, Script, Sha256d,
+    ShaRmd160, TxOutput, BCHREG,
 };
 use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
 use bitcoinsuite_error::Result;
@@ -191,6 +191,16 @@ async fn test_server() -> Result<()> {
     )
     .await?;
 
+    let response = client.get(format!("{}/raw-tx/ab", url)).send().await?;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    check_proto_error(
+        response,
+        "invalid-field",
+        "Invalid txid: Invalid size: expected 32, got 1",
+        true,
+    )
+    .await?;
+
     let response = client.get(format!("{}/tx/{}", url, txid)).send().await?;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()[CONTENT_TYPE], CONTENT_TYPE_PROTOBUF);
@@ -234,6 +244,15 @@ async fn test_server() -> Result<()> {
     };
 
     assert_eq!(proto_tx, expected_tx.clone());
+
+    let response = client
+        .get(format!("{}/raw-tx/{}", url, txid))
+        .send()
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[CONTENT_TYPE], "application/octet-stream");
+    let raw_tx = response.bytes().await?;
+    assert_eq!(Bytes::from_bytes(raw_tx), tx.ser());
 
     let response = client
         .get(format!(
