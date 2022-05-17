@@ -43,6 +43,7 @@ message Tx {
     string slp_error_msg = 7;
     BlockMetadata block = 8;
     int64 time_first_seen = 9;
+    uint32 size = 11;
     Network network = 10;
 }
 

@@ -91,6 +91,7 @@ pub fn rich_tx_to_proto(rich_tx: RichTx) -> proto::Tx {
             timestamp: block.timestamp,
         }),
         time_first_seen: rich_tx.time_first_seen,
+        size: rich_tx.tx.raw().len() as u32,
         network: network_to_proto(rich_tx.network) as i32,
     }
 }
