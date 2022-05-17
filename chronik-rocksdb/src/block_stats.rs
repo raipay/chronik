@@ -138,7 +138,10 @@ impl<'a> BlockStatsReader<'a> {
 
     pub fn by_height(&self, block_height: BlockHeight) -> Result<Option<BlockStats>> {
         let block_height = BlockHeightZC::new(block_height);
-        let block_stats = match self.db.get(self.cf_block_stats(), block_height.as_bytes())? {
+        let block_stats = match self
+            .db
+            .get(self.cf_block_stats(), block_height.as_bytes())?
+        {
             Some(block_stats) => block_stats,
             None => return Ok(None),
         };
