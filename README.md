@@ -101,6 +101,7 @@ Otherwise, you can follow the same instructions as for the eCash node.
   nng_pub_url = "ipc:///path/to/pub.pipe"
   nng_rpc_url = "ipc:///path/to/rpc.pipe"
   db_path = "/path/to/index.rocksdb"
+  transient_data_path = "/path/to/transient.rocksdb"  # load/store data not on blockchain, like time_first_seen
   cache_script_history = 1000000
   network = "XPI"
 
