@@ -16,8 +16,7 @@ futures = "0.3"
 thiserror = "1.0"
 bitcoinsuite-error = { path = "../../bitcoinsuite/bitcoinsuite-error" }
 
-tonic = { version = "0.6", features = ["transport", "tls"] }
-prost = "0.9"
+prost = "0.10"
 async-trait = "0.1.50"
 hyper = "0.14"
 
@@ -53,4 +52,4 @@ bitcoinsuite-bitcoind = { path = "../../bitcoinsuite/bitcoinsuite-bitcoind" }
 bitcoinsuite-bitcoind-nng = { path = "../../bitcoinsuite/bitcoinsuite-bitcoind-nng" }
 
 [build-dependencies]
-tonic-build = "0.6"
+prost-build = "0.10"

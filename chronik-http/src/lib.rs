@@ -5,7 +5,7 @@ mod server;
 mod validation;
 
 pub mod proto {
-    tonic::include_proto!("chronik");
+    include!(concat!(env!("OUT_DIR"), "/chronik.rs"));
 }
 
 pub use protobuf::CONTENT_TYPE_PROTOBUF;
