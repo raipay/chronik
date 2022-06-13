@@ -743,6 +743,11 @@ async fn test_server() -> Result<()> {
                     total_minted: "1234".to_string(),
                     total_burned: "0".to_string(),
                 }),
+                block: None,
+                time_first_seen: 2_100_000_000,
+                initial_token_quantity: 1234,
+                contains_baton: false,
+                network: proto::Network::Xpi.into(),
             },
         );
     }

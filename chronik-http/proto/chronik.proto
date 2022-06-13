@@ -61,6 +61,11 @@ message Utxo {
 message Token {
     SlpTxData slp_tx_data = 1;
     TokenStats token_stats = 2;
+    BlockMetadata block = 3;
+    int64 time_first_seen = 4;
+    uint64 initial_token_quantity = 5;
+    bool contains_baton = 6;
+    Network network = 7;
 }
 
 message BlockInfo {
