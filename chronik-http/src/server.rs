@@ -348,12 +348,30 @@ async fn handle_token(
         .tokens()
         .token_stats_by_token_id(&token_id)?
         .unwrap_or_default();
+    let initial_token_quantity = slp_tx_data
+        .output_tokens
+        .iter()
+        .map(|token| u64::try_from(token.amount.base_amount()).unwrap())
+        .sum::<u64>();
+    let contains_baton = slp_tx_data
+        .output_tokens
+        .iter()
+        .any(|token| token.is_mint_baton);
     Ok(Protobuf(proto::Token {
         slp_tx_data: Some(slp_tx_data_to_proto(slp_tx_data)),
         token_stats: Some(proto::TokenStats {
             total_minted: token_stats.total_minted.to_string(),
             total_burned: token_stats.total_burned.to_string(),
         }),
+        block: rich_tx.block.map(|block| proto::BlockMetadata {
+            height: block.height,
+            hash: block.hash.as_slice().to_vec(),
+            timestamp: block.timestamp,
+        }),
+        time_first_seen: rich_tx.time_first_seen,
+        initial_token_quantity,
+        contains_baton,
+        network: network_to_proto(rich_tx.network).into(),
     }))
 }
 
