@@ -41,5 +41,5 @@ pub use crate::txs::*;
 pub use crate::utxos::*;
 
 pub mod proto {
-    tonic::include_proto!("chronik_db");
+    include!(concat!(env!("OUT_DIR"), "/chronik_db.rs"));
 }
