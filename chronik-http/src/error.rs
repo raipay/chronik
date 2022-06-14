@@ -1,4 +1,7 @@
-use axum::{http::StatusCode, response::IntoResponse};
+use axum::{
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
 use bitcoinsuite_error::{report_to_details, ErrorMeta, ErrorSeverity, Report};
 
 use crate::{
@@ -90,10 +93,7 @@ pub fn report_to_status_proto(report: &Report) -> (StatusCode, Protobuf<proto::E
 }
 
 impl IntoResponse for ReportError {
-    type Body = hyper::Body;
-    type BodyError = <Self::Body as axum::body::HttpBody>::Error;
-
-    fn into_response(self) -> hyper::Response<Self::Body> {
+    fn into_response(self) -> Response {
         report_to_status_proto(&self.0).into_response()
     }
 }

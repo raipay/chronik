@@ -7,7 +7,7 @@ use axum::{
     },
     response::IntoResponse,
     routing::{self, MethodFilter},
-    AddExtensionLayer, Router,
+    Router,
 };
 use bitcoinsuite_core::{BitcoinCode, BitcoinSuiteError, Hashed, OutPoint, Sha256d, UnhashedTx};
 use bitcoinsuite_error::{ErrorMeta, Report, WrapErr};
@@ -122,7 +122,7 @@ impl ChronikServer {
                 routing::post(handle_validate_utxos).on(MethodFilter::OPTIONS, handle_post_options),
             )
             .route("/ws", routing::get(handle_subscribe))
-            .layer(AddExtensionLayer::new(self))
+            .layer(Extension(self))
             .layer(CompressionLayer::new());
 
         axum::Server::bind(&addr)
