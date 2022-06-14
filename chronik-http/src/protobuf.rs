@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use axum::{
     extract::{FromRequest, RequestParts},
     http::HeaderValue,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
 };
 use bitcoinsuite_error::ErrorMeta;
 use hyper::{body::to_bytes, header::CONTENT_TYPE, Body};
@@ -29,11 +29,11 @@ pub enum ChronikProtobufError {
 use self::ChronikProtobufError::*;
 
 #[async_trait]
-impl<P: Message + Default> FromRequest for Protobuf<P> {
+impl<P: Message + Default> FromRequest<Body> for Protobuf<P> {
     type Rejection = ReportError;
 
-    async fn from_request(req: &mut RequestParts) -> Result<Self, Self::Rejection> {
-        let headers = req.headers().expect("Headers taken");
+    async fn from_request(req: &mut RequestParts<Body>) -> Result<Self, Self::Rejection> {
+        let headers = req.headers();
         check_content_type(headers, CONTENT_TYPE_PROTOBUF)?;
         let mut body = req.take_body().expect("Body taken");
         let mut body_bytes = to_bytes(&mut body)
@@ -45,12 +45,9 @@ impl<P: Message + Default> FromRequest for Protobuf<P> {
 }
 
 impl<P: Message + Default> IntoResponse for Protobuf<P> {
-    type Body = Body;
-    type BodyError = <Self::Body as axum::body::HttpBody>::Error;
-
-    fn into_response(self) -> hyper::Response<Self::Body> {
-        let mut response = hyper::Response::builder()
-            .body(self.0.encode_to_vec().into())
+    fn into_response(self) -> Response {
+        let mut response = Response::builder()
+            .body(axum::body::boxed(Body::from(self.0.encode_to_vec())))
             .unwrap();
         response.headers_mut().insert(
             CONTENT_TYPE,
