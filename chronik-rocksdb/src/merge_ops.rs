@@ -26,7 +26,7 @@ pub fn full_merge_ordered_list<T: AsBytes + FromBytes + Unaligned + Clone + Ord>
         None => vec![],
     };
     for operand in operands {
-        match *operand.get(0).unwrap() {
+        match *operand.first().unwrap() {
             PREFIX_INSERT => {
                 let entry = interpret(&operand[1..]).unwrap();
                 if let Err(insert_idx) = entries.binary_search(entry) {
