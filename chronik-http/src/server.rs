@@ -13,7 +13,7 @@ use bitcoinsuite_core::{BitcoinCode, BitcoinSuiteError, Hashed, OutPoint, Sha256
 use bitcoinsuite_error::{ErrorMeta, Report, WrapErr};
 use bitcoinsuite_slp::{SlpTokenType, SlpTxTypeVariant, TokenId};
 use chronik_indexer::{
-    subscribers::{SubscribeBlockMessage, SubscribeScriptMessage},
+    subscribers::{SubscribeAllTxsMessage, SubscribeBlockMessage, SubscribeScriptMessage},
     SlpIndexer, UtxoStateVariant,
 };
 use chronik_rocksdb::ScriptPayload;
@@ -516,11 +516,18 @@ async fn handle_subscribe(
 enum SubscribeAction {
     Close,
     Message(ws::Message),
-    Subscribe {
+    Subscribe(SubscribeType),
+    Nothing,
+}
+
+enum SubscribeType {
+    ScriptPayload {
         script_payload: ScriptPayload,
         is_subscribe: bool,
     },
-    Nothing,
+    AllTxs {
+        is_subscribe: bool,
+    },
 }
 
 fn subscribe_client_msg_action(
@@ -533,20 +540,41 @@ fn subscribe_client_msg_action(
     match client_msg {
         Ok(ws::Message::Binary(client_msg)) => {
             let subscription = proto::Subscription::decode(client_msg.as_slice())?;
+            if subscription.script_type == "all-txs" {
+                return Ok(SubscribeAction::Subscribe(SubscribeType::AllTxs {
+                    is_subscribe: subscription.is_subscribe,
+                }));
+            }
             let payload_prefix =
                 parse_payload_prefix(subscription.script_type, subscription.payload.len())?;
-            Ok(SubscribeAction::Subscribe {
+            Ok(SubscribeAction::Subscribe(SubscribeType::ScriptPayload {
                 script_payload: ScriptPayload {
                     payload_prefix,
                     payload_data: subscription.payload,
                 },
                 is_subscribe: subscription.is_subscribe,
-            })
+            }))
         }
         Ok(ws::Message::Ping(ping)) => Ok(SubscribeAction::Message(ws::Message::Pong(ping))),
         Ok(ws::Message::Text(_)) => Err(UnexpectedMessageType("Text").into()),
         Ok(ws::Message::Pong(_pong)) => Ok(SubscribeAction::Nothing),
         Ok(ws::Message::Close(_)) | Err(_) => Ok(SubscribeAction::Close),
+    }
+}
+
+async fn wait_for_scripts(
+    subbed_scripts: &mut HashMap<ScriptPayload, broadcast::Receiver<SubscribeScriptMessage>>,
+) -> Result<SubscribeScriptMessage, broadcast::error::RecvError> {
+    if !subbed_scripts.is_empty() {
+        let (script_msg, _, _) = select_all(
+            subbed_scripts
+                .values_mut()
+                .map(|receiver| Box::pin(receiver.recv())),
+        )
+        .await;
+        script_msg
+    } else {
+        futures::future::pending().await
     }
 }
 
@@ -606,6 +634,35 @@ fn subscribe_block_msg_action(
     Ok(SubscribeAction::Message(msg))
 }
 
+async fn wait_for_txs(
+    all_txs_receiver: &mut Option<broadcast::Receiver<SubscribeAllTxsMessage>>,
+) -> Result<SubscribeAllTxsMessage, broadcast::error::RecvError> {
+    match all_txs_receiver {
+        Some(all_txs_receiver) => all_txs_receiver.recv().await,
+        None => futures::future::pending().await,
+    }
+}
+
+fn subscribe_all_txs_msg_action(
+    all_txs_msg: Result<SubscribeAllTxsMessage, broadcast::error::RecvError>,
+) -> Result<SubscribeAction, Report> {
+    use proto::subscribe_msg::MsgType;
+    let all_txs_msg = match all_txs_msg {
+        Ok(all_txs_msg) => all_txs_msg,
+        Err(_) => return Ok(SubscribeAction::Nothing),
+    };
+    let msg_type = Some(match all_txs_msg {
+        SubscribeAllTxsMessage::AddedToMempool(txid) => {
+            MsgType::AddedToMempool(proto::MsgAddedToMempool {
+                txid: txid.as_slice().to_vec(),
+            })
+        }
+    });
+    let msg_proto = proto::SubscribeMsg { msg_type };
+    let msg = ws::Message::Binary(msg_proto.encode_to_vec());
+    Ok(SubscribeAction::Message(msg))
+}
+
 async fn handle_subscribe_socket(mut socket: WebSocket, server: ChronikServer) {
     let mut subbed_scripts =
         HashMap::<ScriptPayload, broadcast::Receiver<SubscribeScriptMessage>>::new();
@@ -613,21 +670,13 @@ async fn handle_subscribe_socket(mut socket: WebSocket, server: ChronikServer) {
         let mut slp_indexer = server.slp_indexer.write().await;
         slp_indexer.subscribers_mut().subscribe_to_blocks()
     };
+    let mut all_txs_receiver: Option<broadcast::Receiver<SubscribeAllTxsMessage>> = None;
     loop {
-        let subscribe_action = if subbed_scripts.is_empty() {
-            let client_msg = socket.recv().await;
-            subscribe_client_msg_action(client_msg)
-        } else {
-            let script_receivers = select_all(
-                subbed_scripts
-                    .values_mut()
-                    .map(|receiver| Box::pin(receiver.recv())),
-            );
-            tokio::select! {
-                client_msg = socket.recv() => subscribe_client_msg_action(client_msg),
-                block_msg = blocks_receiver.recv() => subscribe_block_msg_action(block_msg),
-                (script_msg, _, _) = script_receivers => subscribe_script_msg_action(script_msg),
-            }
+        let subscribe_action = tokio::select! {
+            client_msg = socket.recv() => subscribe_client_msg_action(client_msg),
+            block_msg = blocks_receiver.recv() => subscribe_block_msg_action(block_msg),
+            all_txs_msg = wait_for_txs(&mut all_txs_receiver) => subscribe_all_txs_msg_action(all_txs_msg),
+            script_msg = wait_for_scripts(&mut subbed_scripts) => subscribe_script_msg_action(script_msg),
         };
 
         let subscribe_action = match subscribe_action {
@@ -662,21 +711,33 @@ async fn handle_subscribe_socket(mut socket: WebSocket, server: ChronikServer) {
                 return;
             }
             SubscribeAction::Message(_) => unreachable!(),
-            SubscribeAction::Subscribe {
-                script_payload,
-                is_subscribe,
-            } => {
+            SubscribeAction::Subscribe(subscribe_type) => {
                 let mut slp_indexer = server.slp_indexer.write().await;
-                if is_subscribe {
-                    let receiver = slp_indexer
-                        .subscribers_mut()
-                        .subscribe_to_script(&script_payload);
-                    subbed_scripts.insert(script_payload, receiver);
-                } else {
-                    std::mem::drop(subbed_scripts.remove(&script_payload));
-                    slp_indexer
-                        .subscribers_mut()
-                        .unsubscribe_from_script(&script_payload);
+                match subscribe_type {
+                    SubscribeType::ScriptPayload {
+                        script_payload,
+                        is_subscribe,
+                    } => {
+                        if is_subscribe {
+                            let receiver = slp_indexer
+                                .subscribers_mut()
+                                .subscribe_to_script(&script_payload);
+                            subbed_scripts.insert(script_payload, receiver);
+                        } else {
+                            std::mem::drop(subbed_scripts.remove(&script_payload));
+                            slp_indexer
+                                .subscribers_mut()
+                                .unsubscribe_from_script(&script_payload);
+                        }
+                    }
+                    SubscribeType::AllTxs { is_subscribe } => {
+                        if is_subscribe {
+                            all_txs_receiver =
+                                Some(slp_indexer.subscribers_mut().subscribe_to_all_txs());
+                        } else {
+                            all_txs_receiver = None;
+                        }
+                    }
                 }
             }
             SubscribeAction::Nothing => {}

@@ -18,13 +18,20 @@ pub enum SubscribeBlockMessage {
     BlockDisconnected(Sha256d),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubscribeAllTxsMessage {
+    AddedToMempool(Sha256d),
+}
+
 const SCRIPT_CHANNEL_CAPACITY: usize = 16;
 const BLOCK_CHANNEL_CAPACITY: usize = 16;
+const ALL_TX_CHANNEL_CAPACITY: usize = 64;
 
 #[derive(Debug, Clone)]
 pub struct Subscribers {
     subs_script: HashMap<ScriptPayload, broadcast::Sender<SubscribeScriptMessage>>,
     subs_block: broadcast::Sender<SubscribeBlockMessage>,
+    subs_all_tx: broadcast::Sender<SubscribeAllTxsMessage>,
 }
 
 impl Subscribers {
@@ -55,6 +62,10 @@ impl Subscribers {
         self.subs_block.subscribe()
     }
 
+    pub fn subscribe_to_all_txs(&self) -> broadcast::Receiver<SubscribeAllTxsMessage> {
+        self.subs_all_tx.subscribe()
+    }
+
     pub(crate) fn broadcast_to_script(
         &mut self,
         script: &ScriptPayload,
@@ -75,6 +86,14 @@ impl Subscribers {
             }
         }
     }
+
+    pub(crate) fn broadcast_to_all_txs(&mut self, msg: SubscribeAllTxsMessage) {
+        if self.subs_all_tx.receiver_count() > 0 {
+            if let Err(err) = self.subs_all_tx.send(msg) {
+                eprintln!("Unexpected send error (broadcast_to_all_txs): {}", err);
+            }
+        }
+    }
 }
 
 impl Default for Subscribers {
@@ -82,6 +101,7 @@ impl Default for Subscribers {
         Subscribers {
             subs_script: Default::default(),
             subs_block: broadcast::channel(BLOCK_CHANNEL_CAPACITY).0,
+            subs_all_tx: broadcast::channel(ALL_TX_CHANNEL_CAPACITY).0,
         }
     }
 }

@@ -133,6 +133,19 @@ async fn test_server() -> Result<()> {
         ))
         .await?;
 
+    let (mut ws_client_all_txs, response) = connect_async(format!("{}/ws", ws_url)).await?;
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    ws_client_all_txs
+        .send(WsMessage::binary(
+            proto::Subscription {
+                script_type: "all-txs".to_string(),
+                payload: vec![],
+                is_subscribe: true,
+            }
+            .encode_to_vec(),
+        ))
+        .await?;
+
     let utxo = utxos.pop().unwrap();
     let leftover_value = utxo.output.value - 20_000;
     let tx = build_tx(
@@ -174,12 +187,18 @@ async fn test_server() -> Result<()> {
         .unwrap()?;
     let msg = msg.into_data();
     let msg = proto::SubscribeMsg::decode(msg.as_slice())?;
-    match msg.msg_type.unwrap() {
+    match msg.msg_type.as_ref().unwrap() {
         proto::subscribe_msg::MsgType::AddedToMempool(added_to_mempool) => {
             assert_eq!(added_to_mempool.txid, txid.as_slice());
         }
         msg => panic!("Unexpected message: {:?}", msg),
     }
+    let all_msg = timeout(Duration::from_millis(50), ws_client_all_txs.next())
+        .await.unwrap()
+        .unwrap()?;
+    let all_msg = all_msg.into_data();
+    let all_msg = proto::SubscribeMsg::decode(all_msg.as_slice())?;
+    assert_eq!(all_msg, msg);
 
     let response = client.get(format!("{}/tx/ab", url)).send().await?;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);

@@ -18,7 +18,9 @@ use tokio::sync::RwLock;
 
 use crate::{
     broadcast::Broadcast,
-    subscribers::{SubscribeBlockMessage, SubscribeScriptMessage, Subscribers},
+    subscribers::{
+        SubscribeAllTxsMessage, SubscribeBlockMessage, SubscribeScriptMessage, Subscribers,
+    },
     txs::Txs,
     Blocks, ScriptHistory, Tokens, Utxos,
 };
@@ -395,6 +397,8 @@ impl SlpIndexer {
                 .map(|spent_output| &spent_output.tx_output.script),
             tx.outputs.iter().map(|spent_output| &spent_output.script),
         );
+        self.subscribers
+            .broadcast_to_all_txs(SubscribeAllTxsMessage::AddedToMempool(nng_tx.txid.clone()));
         let entry = MempoolTxEntry {
             tx,
             spent_coins,
