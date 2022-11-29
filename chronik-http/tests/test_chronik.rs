@@ -99,7 +99,7 @@ async fn test_server() -> Result<()> {
     );
 
     let anyone1_script = Script::from_slice(&[0x51]);
-    let anyone1_hash = ShaRmd160::digest(anyone1_script.bytecode().clone());
+    let anyone1_hash = ShaRmd160::digest(&anyone1_script.bytecode());
     let anyone1_slice = anyone1_hash.as_slice();
     let anyone1_address = CashAddress::from_hash(BCHREG, AddressType::P2SH, anyone1_hash.clone());
     bitcoind.cmd_json("generatetoaddress", &["10", anyone1_address.as_str()])?;
@@ -116,7 +116,7 @@ async fn test_server() -> Result<()> {
     assert_eq!(utxos.len(), 10);
 
     let anyone2_script = Script::from_slice(&[0x52]);
-    let anyone2_hash = ShaRmd160::digest(anyone2_script.bytecode().clone());
+    let anyone2_hash = ShaRmd160::digest(&anyone2_script.bytecode());
     let anyone2_slice = anyone2_hash.as_slice();
     let anyone2_address = CashAddress::from_hash(BCHREG, AddressType::P2SH, anyone2_hash.clone());
 

@@ -253,7 +253,7 @@ async fn test_get_out_of_ibd(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli
 }
 
 async fn test_reorg_empty(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Result<()> {
-    let anyone_payload = ShaRmd160::digest(Bytes::from_bytes(vec![0x51]));
+    let anyone_payload = ShaRmd160::digest(&Bytes::from_bytes(vec![0x51]));
     let anyone_script = Script::p2sh(&anyone_payload);
     let anyone_payload = anyone_payload.as_slice();
     // build two empty blocks that reorg the previous block
