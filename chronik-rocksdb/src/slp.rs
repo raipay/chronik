@@ -106,10 +106,11 @@ enum SerSlpToken {
 
 #[derive(Deserialize, Serialize, Clone)]
 enum SerSlpTxType {
-    Genesis,
-    Send,
-    Mint,
-    Unknown,
+    Genesis = 0,
+    Send = 1,
+    Mint = 2,
+    Burn = 4,
+    Unknown = 3,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -520,6 +521,7 @@ impl<'a> SlpWriter<'a> {
                 SlpTxType::Genesis(_) => SerSlpTxType::Genesis,
                 SlpTxType::Mint => SerSlpTxType::Mint,
                 SlpTxType::Send => SerSlpTxType::Send,
+                SlpTxType::Burn(_) => SerSlpTxType::Burn,
                 SlpTxType::Unknown => SerSlpTxType::Unknown,
             };
             let token_num = match slp_tx_data.slp_token_type {
@@ -795,12 +797,13 @@ impl<'a> SlpReader<'a> {
                     .transpose()
             })
             .collect::<Result<Vec<_>>>()?;
+        let input_tokens = slp_tx_data
+            .input_tokens
+            .iter()
+            .map(SerSlpToken::to_token)
+            .collect::<Vec<_>>();
         let slp_tx_data = SlpTxData {
-            input_tokens: slp_tx_data
-                .input_tokens
-                .iter()
-                .map(SerSlpToken::to_token)
-                .collect(),
+            input_tokens: input_tokens.clone(),
             output_tokens: slp_tx_data
                 .output_tokens
                 .iter()
@@ -819,6 +822,13 @@ impl<'a> SlpReader<'a> {
                 }
                 SerSlpTxType::Mint => SlpTxType::Mint,
                 SerSlpTxType::Send => SlpTxType::Send,
+                SerSlpTxType::Burn => {
+                    let burn_amount = input_tokens
+                        .iter()
+                        .map(|token| token.amount)
+                        .sum::<SlpAmount>();
+                    SlpTxType::Burn(burn_amount.base_amount().try_into().unwrap())
+                }
                 SerSlpTxType::Unknown => SlpTxType::Unknown,
             },
             token_id: match slp_tx_data.token_num {

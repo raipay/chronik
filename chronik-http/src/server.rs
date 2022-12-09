@@ -458,6 +458,7 @@ async fn handle_script_utxos(
                             SlpTxTypeVariant::Genesis => proto::SlpTxType::Genesis as i32,
                             SlpTxTypeVariant::Send => proto::SlpTxType::Send as i32,
                             SlpTxTypeVariant::Mint => proto::SlpTxType::Mint as i32,
+                            SlpTxTypeVariant::Burn => proto::SlpTxType::Burn as i32,
                             SlpTxTypeVariant::Unknown => proto::SlpTxType::UnknownTxType as i32,
                         },
                         token_id: slp_output.token_id.as_slice_be().to_vec(),

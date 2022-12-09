@@ -111,6 +111,7 @@ pub fn slp_tx_data_to_proto(slp_tx_data: Box<SlpTxData>) -> proto::SlpTxData {
                 SlpTxType::Genesis(_) => proto::SlpTxType::Genesis as i32,
                 SlpTxType::Send => proto::SlpTxType::Send as i32,
                 SlpTxType::Mint => proto::SlpTxType::Mint as i32,
+                SlpTxType::Burn(_) => proto::SlpTxType::Burn as i32,
                 SlpTxType::Unknown => proto::SlpTxType::UnknownTxType as i32,
             },
             token_id: slp_tx_data.token_id.as_slice_be().to_vec(),
