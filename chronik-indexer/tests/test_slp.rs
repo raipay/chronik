@@ -162,7 +162,7 @@ async fn test_index_slp(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> 
             input_tokens: vec![SlpToken::EMPTY],
             output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(200), SlpToken::MINT_BATON],
             slp_token_type: SlpTokenType::Fungible,
-            slp_tx_type: SlpTxType::Genesis(Box::new(SlpGenesisInfo::default())),
+            slp_tx_type: SlpTxType::Genesis(Default::default()),
             token_id: token_id1.clone(),
             group_token_id: None,
         })),
@@ -180,7 +180,7 @@ async fn test_index_slp(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> 
         time_first_seen: 2_100_000_000,
         network: Network::XPI,
     };
-    assert_eq!(slp_indexer.txs().rich_tx_by_txid(&txid1)?, Some(rich_tx1));
+    assert_eq!(slp_indexer.txs().rich_tx_by_txid(&txid1)?, Some(rich_tx1.clone()));
 
     let (outpoint, value) = utxos.pop().unwrap();
     let leftover_value = value - 20_000;
@@ -209,7 +209,7 @@ async fn test_index_slp(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> 
 
     let mut tx_burn = build_tx(
         OutPoint {
-            txid: txid1,
+            txid: txid1.clone(),
             out_idx: 1,
         },
         &anyone_script,
@@ -282,8 +282,82 @@ async fn test_index_slp(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> 
     let broadcast_error = broadcast_error.downcast::<BroadcastError>()?;
     assert_eq!(
         broadcast_error,
-        BroadcastError::BitcoindRejectedTx("absurdly-high-fee, 779970000 > 2460000".to_string()),
+        BroadcastError::BitcoindRejectedTx(
+            "Fee exceeds maximum configured by user (e.g. -maxtxfee, maxfeerate)".to_string()
+        ),
     );
+
+    // mine previous txs
+    bitcoind.cmd_json("generatetoaddress", &["1", burn_address.as_str()])?;
+    slp_indexer.process_next_msg()?;
+
+    let recv1_redeem_script = Script::from_slice(&[0x52]);
+    let recv1_hash = ShaRmd160::digest(recv1_redeem_script.bytecode().clone());
+    let recv1_script = Script::p2sh(&recv1_hash);
+
+    let tx3 = build_tx(
+        OutPoint {
+            txid: txid1,
+            out_idx: 1,
+        },
+        &anyone_script,
+        vec![
+            TxOutput {
+                value: 0,
+                script: send_opreturn(&token_id1, SlpTokenType::Fungible, &[SlpAmount::new(200)]),
+            },
+            TxOutput {
+                value: leftover_value - 20_000,
+                script: recv1_script,
+            },
+        ],
+    );
+
+    let txid3 = slp_indexer.broadcast().broadcast_tx(&tx3, true).await?;
+    slp_indexer.process_next_msg()?;
+
+    let rich_tx3 = RichTx {
+        tx: tx3.hashed(),
+        txid: txid3.clone(),
+        block: None,
+        slp_tx_data: Some(Box::new(SlpTxData {
+            input_tokens: vec![SlpToken::amount(200)],
+            output_tokens: vec![SlpToken::EMPTY, SlpToken::amount(200)],
+            slp_token_type: SlpTokenType::Fungible,
+            slp_tx_type: SlpTxType::Send,
+            token_id: token_id1.clone(),
+            group_token_id: None,
+        })),
+        spent_coins: Some(vec![Coin {
+            tx_output: TxOutput {
+                value: leftover_value,
+                script: anyone_script.to_p2sh(),
+            },
+            height: Some(111),
+            is_coinbase: false,
+        }]),
+        spends: vec![None, None],
+        slp_burns: vec![None],
+        slp_error_msg: None,
+        time_first_seen: 2_100_000_000,
+        network: Network::XPI,
+    };
+    assert_eq!(slp_indexer.txs().rich_tx_by_txid(&txid3)?, Some(rich_tx3));
+
+    // Mine tx3
+    let block_hashes = bitcoind.cmd_json("generatetoaddress", &["1", burn_address.as_str()])?;
+    slp_indexer.process_next_msg()?;
+
+    // Invalidate last block
+    let block_hash = block_hashes[0].as_str().unwrap();
+    bitcoind.cmd_string("invalidateblock", &[block_hash])?;
+    slp_indexer.process_next_msg()?;
+
+    // tx3 is gone now
+    assert_eq!(slp_indexer.txs().rich_tx_by_txid(&txid3)?, None);
+
+    // token1 is still valid
+    assert_eq!(slp_indexer.txs().rich_tx_by_txid(token_id1.hash())?, Some(rich_tx1));
 
     Ok(())
 }
