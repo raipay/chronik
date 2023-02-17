@@ -6,8 +6,8 @@ use bitcoinsuite_bitcoind::{
 };
 use bitcoinsuite_bitcoind_nng::{PubInterface, RpcInterface};
 use bitcoinsuite_core::{
-    AddressType, CashAddress, Coin, Hashed, Network, OutPoint, Script, Sha256d, ShaRmd160,
-    TxOutput, BCHREG,
+    build_lotus_block, build_lotus_coinbase, AddressType, BitcoinCode, CashAddress, Coin, Hashed,
+    Network, OutPoint, Script, Sha256d, ShaRmd160, TxOutput, BCHREG,
 };
 use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
 use bitcoinsuite_error::Result;
@@ -347,7 +347,10 @@ async fn test_index_slp(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> 
         time_first_seen: 2_100_000_000,
         network: Network::XPI,
     };
-    assert_eq!(slp_indexer.txs().rich_tx_by_txid(&txid3)?, Some(rich_tx3));
+    assert_eq!(
+        slp_indexer.txs().rich_tx_by_txid(&txid3)?,
+        Some(rich_tx3.clone()),
+    );
 
     // Mine tx3
     let block_hashes = bitcoind.cmd_json("generatetoaddress", &["1", burn_address.as_str()])?;
@@ -367,10 +370,45 @@ async fn test_index_slp(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> 
         Some(RichTx {
             block: Some(RichTxBlock {
                 height: 111,
-                hash: block_hash1,
+                hash: block_hash1.clone(),
                 timestamp: 2_100_000_020,
             }),
             ..rich_tx1
+        })
+    );
+
+    // Moved from block to mempool
+    slp_indexer.process_next_msg()?;
+    // tx3 is back in the mempool
+    assert_eq!(
+        slp_indexer.txs().rich_tx_by_txid(&txid3)?,
+        Some(rich_tx3.clone()),
+    );
+
+    // Mine tx3
+    let mut reorg_block2 = build_lotus_block(
+        block_hash1,
+        2_100_000_123,
+        112,
+        build_lotus_coinbase(112, burn_address.to_script()).hashed(),
+        vec![tx3.hashed()],
+        Sha256d::default(),
+        vec![],
+    );
+    reorg_block2.prepare();
+    bitcoind.cmd_string("submitblock", &[&reorg_block2.ser().hex()])?;
+    slp_indexer.process_next_msg()?;
+
+    // tx3 is now mined
+    assert_eq!(
+        slp_indexer.txs().rich_tx_by_txid(&txid3)?,
+        Some(RichTx {
+            block: Some(RichTxBlock {
+                height: 112,
+                hash: reorg_block2.header.calc_hash(),
+                timestamp: 2_100_000_123,
+            }),
+            ..rich_tx3
         })
     );
 
