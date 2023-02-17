@@ -6,13 +6,14 @@ use bitcoinsuite_bitcoind::{
 };
 use bitcoinsuite_bitcoind_nng::{PubInterface, RpcInterface};
 use bitcoinsuite_core::{
-    AddressType, CashAddress, Coin, Hashed, Network, OutPoint, Script, ShaRmd160, TxOutput, BCHREG,
+    AddressType, CashAddress, Coin, Hashed, Network, OutPoint, Script, Sha256d, ShaRmd160,
+    TxOutput, BCHREG,
 };
 use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
 use bitcoinsuite_error::Result;
 use bitcoinsuite_slp::{
-    genesis_opreturn, send_opreturn, RichTx, SlpAmount, SlpBurn, SlpError, SlpGenesisInfo,
-    SlpToken, SlpTokenType, SlpTxData, SlpTxType, TokenId,
+    genesis_opreturn, send_opreturn, RichTx, RichTxBlock, SlpAmount, SlpBurn, SlpError,
+    SlpGenesisInfo, SlpToken, SlpTokenType, SlpTxData, SlpTxType, TokenId,
 };
 use bitcoinsuite_test_utils::bin_folder;
 use bitcoinsuite_test_utils_blockchain::build_tx;
@@ -180,7 +181,10 @@ async fn test_index_slp(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> 
         time_first_seen: 2_100_000_000,
         network: Network::XPI,
     };
-    assert_eq!(slp_indexer.txs().rich_tx_by_txid(&txid1)?, Some(rich_tx1.clone()));
+    assert_eq!(
+        slp_indexer.txs().rich_tx_by_txid(&txid1)?,
+        Some(rich_tx1.clone())
+    );
 
     let (outpoint, value) = utxos.pop().unwrap();
     let leftover_value = value - 20_000;
@@ -288,8 +292,9 @@ async fn test_index_slp(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> 
     );
 
     // mine previous txs
-    bitcoind.cmd_json("generatetoaddress", &["1", burn_address.as_str()])?;
+    let block_hashes = bitcoind.cmd_json("generatetoaddress", &["1", burn_address.as_str()])?;
     slp_indexer.process_next_msg()?;
+    let block_hash1 = Sha256d::from_hex_be(block_hashes[0].as_str().unwrap())?;
 
     let recv1_redeem_script = Script::from_slice(&[0x52]);
     let recv1_hash = ShaRmd160::digest(recv1_redeem_script.bytecode().clone());
@@ -317,7 +322,7 @@ async fn test_index_slp(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> 
     slp_indexer.process_next_msg()?;
 
     let rich_tx3 = RichTx {
-        tx: tx3.hashed(),
+        tx: tx3.clone().hashed(),
         txid: txid3.clone(),
         block: None,
         slp_tx_data: Some(Box::new(SlpTxData {
@@ -349,15 +354,25 @@ async fn test_index_slp(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> 
     slp_indexer.process_next_msg()?;
 
     // Invalidate last block
-    let block_hash = block_hashes[0].as_str().unwrap();
-    bitcoind.cmd_string("invalidateblock", &[block_hash])?;
+    let block_hash2 = block_hashes[0].as_str().unwrap();
+    bitcoind.cmd_string("invalidateblock", &[block_hash2])?;
     slp_indexer.process_next_msg()?;
 
     // tx3 is gone now
     assert_eq!(slp_indexer.txs().rich_tx_by_txid(&txid3)?, None);
 
     // token1 is still valid
-    assert_eq!(slp_indexer.txs().rich_tx_by_txid(token_id1.hash())?, Some(rich_tx1));
+    assert_eq!(
+        slp_indexer.txs().rich_tx_by_txid(token_id1.hash())?,
+        Some(RichTx {
+            block: Some(RichTxBlock {
+                height: 111,
+                hash: block_hash1,
+                timestamp: 2_100_000_020,
+            }),
+            ..rich_tx1
+        })
+    );
 
     Ok(())
 }
