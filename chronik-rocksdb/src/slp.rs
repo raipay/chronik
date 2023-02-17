@@ -638,16 +638,18 @@ impl<'a> SlpWriter<'a> {
             batch.delete_cf(self.cf_slp_tx_data(), tx_num_zc.as_bytes());
             batch.delete_cf(self.cf_slp_tx_invalid_message(), tx_num_zc.as_bytes());
             if let Some((delete_token_num, delete_slp)) = delete_token {
-                let delete_token_num_zc = TokenNumZC::new(delete_token_num);
-                batch.delete_cf(
-                    self.cf_slp_token_id_by_num(),
-                    delete_token_num_zc.as_bytes(),
-                );
-                batch.delete_cf(self.cf_slp_token_metadata(), delete_token_num_zc.as_bytes());
-                batch.delete_cf(
-                    self.cf_slp_token_num_by_id(),
-                    delete_slp.slp_tx_data.token_id.as_slice_be(),
-                );
+                if matches!(delete_slp.slp_tx_data.slp_tx_type, SlpTxType::Genesis(_)) {
+                    let delete_token_num_zc = TokenNumZC::new(delete_token_num);
+                    batch.delete_cf(
+                        self.cf_slp_token_id_by_num(),
+                        delete_token_num_zc.as_bytes(),
+                    );
+                    batch.delete_cf(self.cf_slp_token_metadata(), delete_token_num_zc.as_bytes());
+                    batch.delete_cf(
+                        self.cf_slp_token_num_by_id(),
+                        delete_slp.slp_tx_data.token_id.as_slice_be(),
+                    );
+                }
                 token_num_by_id
                     .entry(delete_slp.slp_tx_data.token_id.token_id_be())
                     .or_insert(delete_token_num);
