@@ -30,7 +30,7 @@ On a clean Ubuntu 20.04.3 LTS, the following packages would have to be installed
 
 `sudo apt-get update`
 
-`sudo apt-get install build-essential libssl-dev pkg-config clang cmake`
+`sudo apt-get install build-essential libssl-dev pkg-config clang cmake git`
 
 1. Install [Rust](https://www.rust-lang.org/tools/install)
 3. Clone this repository `chronik` into a folder
@@ -50,14 +50,14 @@ On a clean Ubuntu 20.04.3 LTS, you can follow these instructions:
 1. Install these packages: `sudo apt-get install bsdmainutils build-essential libssl-dev libevent-dev lld ninja-build python3 cmake libjemalloc-dev libnng-dev libboost-system-dev libboost-filesystem-dev libboost-test-dev libboost-thread-dev`
 2. Install [flatbuffers 2.0.0](https://github.com/google/flatbuffers)
     1. `git clone https://github.com/google/flatbuffers`
-    2. `git checkout v2.0.0`
+    2. `cd flatbuffers && git checkout v2.0.0`
     3. `cmake -GNinja -DCMAKE_BUILD_TYPE=Release`
     4. `ninja`
     5. `sudo ninja install`
 3. Clone repo: `git clone https://github.com/raipay/bitcoin-abc`
-4. Checkout NNG branch: `git checkout nng_interface`
-5. Make build folder: `cd bitcoin-abc && mkdir build && cd build`
-6. Generate build files: `cmake -GNinja .. -DBUILD_BITCOIN_QT=OFF -DENABLE_UPNP=OFF -DBUILD_BITCOIN_ZMQ=OFF -DBUILD_BITCOIN_WALLET=OFF`
+4. Checkout NNG branch: `cd bitcoin-abc && git checkout nng_interface`
+5. Make build folder: `mkdir build && cd build`
+6. Generate build files: `cmake -GNinja .. -DBUILD_BITCOIN_QT=OFF -DENABLE_UPNP=OFF -DBUILD_BITCOIN_ZMQ=OFF -DBUILD_BITCOIN_WALLET=OFF -DENABLE_NATPMP=OFF`
 7. Build node: `ninja`
 8. Copy compiled executable somewhere nice, e.g.: `cp build/src/bitcoind /var/chronik/`
 
