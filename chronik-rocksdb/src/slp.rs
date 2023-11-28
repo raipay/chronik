@@ -472,6 +472,9 @@ impl<'a> SlpWriter<'a> {
             // SEND already has the burns calculated
             Some(valid_slp_tx) if valid_slp_tx.slp_tx_data.slp_tx_type == SlpTxType::Send => {
                 for burn in valid_slp_tx.slp_burns.iter().flatten() {
+                    if burn.token.amount == SlpAmount::ZERO || burn.token_id == null_token {
+                        continue;
+                    }
                     let burned_amount = burned.entry(burn.token_id.token_id_be()).or_default();
                     *burned_amount += burn.token.amount.base_amount();
                 }
