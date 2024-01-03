@@ -56,7 +56,7 @@ async fn test_transient_data() -> Result<()> {
     bitcoind.cmd_string("setmocktime", &["2000000000"])?;
 
     let anyone_script = Script::from_slice(&[0x51]);
-    let anyone_hash = ShaRmd160::digest(anyone_script.bytecode().clone());
+    let anyone_hash = ShaRmd160::digest(&anyone_script.bytecode().clone());
     let anyone_address = LotusAddress::new(LOTUS_PREFIX, Net::Regtest, Script::p2sh(&anyone_hash));
 
     let mut utxos = setup_bitcoind_coins(

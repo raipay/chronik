@@ -78,7 +78,7 @@ async fn test_mempool() -> Result<()> {
 async fn test_index_mempool(slp_indexer: &mut SlpIndexer, bitcoind: &BitcoinCli) -> Result<()> {
     use PayloadPrefix::P2SH;
     let anyone_script = Script::from_slice(&[0x51]);
-    let anyone_hash = ShaRmd160::digest(anyone_script.bytecode().clone());
+    let anyone_hash = ShaRmd160::digest(&anyone_script.bytecode().clone());
     let anyone_slice = anyone_hash.as_slice();
     let anyone_address = CashAddress::from_hash(BCHREG, AddressType::P2SH, anyone_hash.clone());
 
