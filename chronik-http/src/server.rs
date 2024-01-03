@@ -1,4 +1,4 @@
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
     extract::{
@@ -20,6 +20,7 @@ use chronik_rocksdb::ScriptPayload;
 use futures::future::select_all;
 use itertools::Itertools;
 use prost::Message;
+use rand::SeedableRng;
 use thiserror::Error;
 use tokio::sync::{broadcast, RwLock};
 use tower_http::compression::CompressionLayer;
@@ -607,13 +608,23 @@ fn subscribe_block_msg_action(
     Ok(SubscribeAction::Message(msg))
 }
 
+fn subscribe_ping_msg_action(rng: &mut impl rand::Rng) -> Result<SubscribeAction, Report> {
+    let mut payload = vec![0; 16];
+    rng.fill_bytes(&mut payload);
+    Ok(SubscribeAction::Message(ws::Message::Ping(payload)))
+}
+
 async fn handle_subscribe_socket(mut socket: WebSocket, server: ChronikServer) {
+    // 45s is a decent value to keep the connection alive in practice
+    const PING_INTERVAL: Duration = Duration::from_secs(45);
+
     let mut subbed_scripts =
         HashMap::<ScriptPayload, broadcast::Receiver<SubscribeScriptMessage>>::new();
     let mut blocks_receiver = {
         let mut slp_indexer = server.slp_indexer.write().await;
         slp_indexer.subscribers_mut().subscribe_to_blocks()
     };
+    let mut rng = rand::rngs::StdRng::from_entropy();
     loop {
         let subscribe_action = if subbed_scripts.is_empty() {
             let client_msg = socket.recv().await;
@@ -628,6 +639,7 @@ async fn handle_subscribe_socket(mut socket: WebSocket, server: ChronikServer) {
                 client_msg = socket.recv() => subscribe_client_msg_action(client_msg),
                 block_msg = blocks_receiver.recv() => subscribe_block_msg_action(block_msg),
                 (script_msg, _, _) = script_receivers => subscribe_script_msg_action(script_msg),
+                _ = tokio::time::sleep(PING_INTERVAL) => subscribe_ping_msg_action(&mut rng),
             }
         };
 
